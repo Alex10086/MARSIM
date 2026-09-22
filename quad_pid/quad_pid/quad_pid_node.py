@@ -60,18 +60,20 @@ class QuadPIDNode(Node):
         """Initialize internal state."""
         self.goal = None
         self.goal_stamp = 0.0
+        now = time.time()
         self.state = {
             'pos': np.zeros(3),
             'vel': np.zeros(3),
             'quat': np.array([0.0, 0.0, 0.0, 1.0]),  # x,y,z,w
             'gyro': np.zeros(3),
-            'odom_stamp': 0.0,
+            'odom_stamp': now,   # avoid freshness timeout before first odom
             'imu_stamp': 0.0,
         }
         self.last_rpm = np.zeros(4)
         self.last_rpm_valid = False
         self.integral_z = 0.0
         self._last_log_time = 0.0
+        self._has_odom = False  # track whether we've ever received odom
 
     def _create_subscriptions(self):
         qos = QoSProfile(
@@ -137,6 +139,7 @@ class QuadPIDNode(Node):
         self.state['vel'] = np.array([v.x, v.y, v.z])
         self.state['quat'] = np.array([q.x, q.y, q.z, q.w])
         self.state['odom_stamp'] = time.time()
+        self._has_odom = True
 
     def _imu_callback(self, msg: Imu):
         g = msg.angular_velocity
@@ -174,8 +177,13 @@ class QuadPIDNode(Node):
         cfg = self._read_params()
 
         # ── Freshness checks ──
+        if not self._has_odom:
+            # No odom ever received → publish known hover RPM
+            self._publish_rpm(np.full(4, 13150.0))
+            return
+
         if now - self.state['odom_stamp'] > 0.5:
-            return  # No odom → don't publish
+            return  # Stale odom → don't publish
 
         if self.goal is None or (now - self.goal_stamp) > cfg['goal_timeout']:
             # No goal or stale → hover at current position
@@ -280,11 +288,7 @@ class QuadPIDNode(Node):
             self.last_rpm_valid = True
 
         # ── Publish ──
-        msg = Float32MultiArray()
-        msg.layout = MultiArrayLayout()
-        msg.layout.dim = [MultiArrayDimension(label='motor', size=4, stride=1)]
-        msg.data = rpm.tolist()
-        self.rpm_pub.publish(msg)
+        self._publish_rpm(rpm)
 
         # Verbose logging
         if cfg['verbose'] and (now - self._last_log_time) > 1.0:
@@ -294,6 +298,13 @@ class QuadPIDNode(Node):
                 f'RPM=[{rpm[0]:.0f},{rpm[1]:.0f},{rpm[2]:.0f},{rpm[3]:.0f}] '
                 f'tilt=({math.degrees(roll_cur):.1f},{math.degrees(pitch_cur):.1f})'
             )
+
+    def _publish_rpm(self, rpm: np.ndarray):
+        msg = Float32MultiArray()
+        msg.layout = MultiArrayLayout()
+        msg.layout.dim = [MultiArrayDimension(label='motor', size=4, stride=1)]
+        msg.data = rpm.tolist()
+        self.rpm_pub.publish(msg)
 
 
 def main(args=None):

@@ -221,10 +221,13 @@ class QuadPIDNode(Node):
             self.integral_z = max(-2.0, min(2.0, self.integral_z))
             a_des[2] += cfg['KI_Z'] * self.integral_z
 
-        # Clamp accelerations
+        # Clamp accelerations (PD output only, before gravity compensation)
         a_des[0] = max(-cfg['max_horiz_acc'], min(cfg['max_horiz_acc'], a_des[0]))
         a_des[1] = max(-cfg['max_horiz_acc'], min(cfg['max_horiz_acc'], a_des[1]))
-        a_des[2] = max(cfg['max_vert_acc_down'], min(cfg['max_vert_acc_up'], a_des[2]))
+        # Z: clamp PD component, then add gravity
+        pd_z = a_des[2] - 9.81
+        pd_z = max(cfg['max_vert_acc_down'], min(cfg['max_vert_acc_up'], pd_z))
+        a_des[2] = pd_z + 9.81
 
         # Safety S3: descend speed limit
         if e_pos[2] < -3.0:

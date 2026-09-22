@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', ['config/quad_pid_params.yaml']),
-        ('share/' + package_name + '/launch', ['launch/quad_pid.launch.py']),
+        ('share/' + package_name + '/launch', ['launch/quad_pid.launch.py', 'launch/single_drone_quad_pid.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

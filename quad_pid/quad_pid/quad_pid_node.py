@@ -169,8 +169,131 @@ class QuadPIDNode(Node):
         return math.acos(z_body_world_z)
 
     def _control_tick(self):
-        """Main control loop. Will be fully implemented in Task 5."""
-        pass
+        """Main control loop: L1→L2→L3→L4 → publish RPM."""
+        now = time.time()
+        cfg = self._read_params()
+
+        # ── Freshness checks ──
+        if now - self.state['odom_stamp'] > 0.5:
+            return  # No odom → don't publish
+
+        if self.goal is None or (now - self.goal_stamp) > cfg['goal_timeout']:
+            # No goal or stale → hover at current position
+            pos_des = self.state['pos'].copy()
+            yaw_des = yaw_from_quaternion(*self.state['quat'])
+        else:
+            g = self.goal.pose.position
+            pos_des = np.array([g.x, g.y, g.z])
+            q = self.goal.pose.orientation
+            # If orientation is identity, keep current yaw
+            if abs(q.x) < 1e-9 and abs(q.y) < 1e-9 and abs(q.z) < 1e-9 and abs(q.w - 1.0) < 1e-9:
+                yaw_des = yaw_from_quaternion(*self.state['quat'])
+            else:
+                yaw_des = yaw_from_quaternion(q.x, q.y, q.z, q.w)
+
+        # Safety S2: distance limiting
+        delta = pos_des - self.state['pos']
+        dist = np.linalg.norm(delta)
+        if dist > cfg['max_horiz_dist']:
+            delta = delta * (cfg['max_horiz_dist'] / dist)
+            pos_des = self.state['pos'] + delta
+
+        # ── Layer 1: Position error → desired acceleration (PD) ──
+        e_pos = pos_des - self.state['pos']
+        e_vel = np.zeros(3) - self.state['vel']  # vel_des = [0,0,0]
+
+        a_des = np.zeros(3)
+        a_des[0] = cfg['KP_XY'] * e_pos[0] + cfg['KD_XY'] * e_vel[0]
+        a_des[1] = cfg['KP_XY'] * e_pos[1] + cfg['KD_XY'] * e_vel[1]
+        a_des[2] = cfg['KP_Z']  * e_pos[2] + cfg['KD_Z']  * e_vel[2] + 9.81
+
+        # Integrator (Z only, default KI_Z=0)
+        if cfg['KI_Z'] > 1e-9:
+            self.integral_z += e_pos[2] * (1.0 / self.get_parameter('control_rate').value)
+            self.integral_z = max(-2.0, min(2.0, self.integral_z))
+            a_des[2] += cfg['KI_Z'] * self.integral_z
+
+        # Clamp accelerations
+        a_des[0] = max(-cfg['max_horiz_acc'], min(cfg['max_horiz_acc'], a_des[0]))
+        a_des[1] = max(-cfg['max_horiz_acc'], min(cfg['max_horiz_acc'], a_des[1]))
+        a_des[2] = max(cfg['max_vert_acc_down'], min(cfg['max_vert_acc_up'], a_des[2]))
+
+        # Safety S3: descend speed limit
+        if e_pos[2] < -3.0:
+            vel_z = self.state['vel'][2]
+            if vel_z < -cfg['max_descend_speed']:
+                a_des_z_corr = cfg['KP_Z'] * e_pos[2] + cfg['KD_Z'] * (-cfg['max_descend_speed'] - vel_z)
+                a_des[2] = min(a_des[2], max(cfg['max_vert_acc_down'], a_des_z_corr))
+
+        # ── Layer 2: acceleration → attitude + thrust ──
+        roll_des, pitch_des = accel_to_attitude(a_des[0], a_des[1], a_des[2])
+
+        # Clamp attitude
+        mt = cfg['max_tilt_rad']
+        roll_des = max(-mt, min(mt, roll_des))
+        pitch_des = max(-mt, min(mt, pitch_des))
+
+        # Total thrust
+        acc_mag = math.sqrt(a_des[0]**2 + a_des[1]**2 + a_des[2]**2)
+        current_tilt = self._compute_current_tilt(*self.state['quat'])
+        cos_tilt = max(math.cos(current_tilt), 0.1)  # guard division by zero
+        F_total = cfg['mass'] * acc_mag / cos_tilt
+        F_total = max(0.0, min(4.0 * cfg['mass'] * 9.81, F_total))
+
+        # ── Layer 3: attitude error → torque ──
+        q = self.state['quat']
+        roll_cur, pitch_cur, yaw_cur = self._quat_to_euler(q[0], q[1], q[2], q[3])
+
+        e_roll = shortest_angle(roll_des, roll_cur)
+        e_pitch = shortest_angle(pitch_des, pitch_cur)
+        e_yaw = shortest_angle(yaw_des, yaw_cur)
+
+        # Use IMU gyro for D term if available and fresh
+        use_gyro = cfg['use_imu'] and (now - self.state['imu_stamp']) < 0.2
+        gyro_damp = self.state['gyro'] if use_gyro else np.zeros(3)
+
+        tau = np.zeros(3)
+        tau[0] = cfg['KP_ATT'] * e_roll  + cfg['KD_ATT'] * (-gyro_damp[0])
+        tau[1] = cfg['KP_ATT'] * e_pitch + cfg['KD_ATT'] * (-gyro_damp[1])
+        tau[2] = cfg['KP_YAW'] * e_yaw   + cfg['KD_YAW'] * (-gyro_damp[2])
+
+        # Clamp torques
+        tau[0] = max(-cfg['max_torque_xy'], min(cfg['max_torque_xy'], tau[0]))
+        tau[1] = max(-cfg['max_torque_xy'], min(cfg['max_torque_xy'], tau[1]))
+        tau[2] = max(-cfg['max_torque_z'],  min(cfg['max_torque_z'],  tau[2]))
+
+        # ── Layer 4: Mixer → RPM ──
+        rpm = allocate(F_total, tau[0], tau[1], tau[2],
+                       cfg['k_F'], cfg['k_T'], cfg['arm_length'])
+
+        # Clamp RPM
+        rpm = np.clip(rpm, cfg['min_rpm'], cfg['max_rpm'])
+
+        # ── NaN guard: hold last valid RPM if any output is NaN ──
+        if np.any(np.isnan(rpm)):
+            if self.last_rpm_valid:
+                rpm = self.last_rpm
+            else:
+                return
+        else:
+            self.last_rpm = rpm.copy()
+            self.last_rpm_valid = True
+
+        # ── Publish ──
+        msg = Float32MultiArray()
+        msg.layout = MultiArrayLayout()
+        msg.layout.dim = [MultiArrayDimension(label='motor', size=4, stride=1)]
+        msg.data = rpm.tolist()
+        self.rpm_pub.publish(msg)
+
+        # Verbose logging
+        if cfg['verbose'] and (now - self._last_log_time) > 1.0:
+            self._last_log_time = now
+            self.get_logger().info(
+                f'pos=({self.state["pos"][0]:.1f},{self.state["pos"][1]:.1f},{self.state["pos"][2]:.1f}) '
+                f'RPM=[{rpm[0]:.0f},{rpm[1]:.0f},{rpm[2]:.0f},{rpm[3]:.0f}] '
+                f'tilt=({math.degrees(roll_cur):.1f},{math.degrees(pitch_cur):.1f})'
+            )
 
 
 def main(args=None):

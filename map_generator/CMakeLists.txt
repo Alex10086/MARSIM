@@ -12,6 +12,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 add_executable(map_pub src/map_publisher.cpp)
 target_include_directories(map_pub PUBLIC
@@ -26,6 +27,7 @@ ament_target_dependencies(
   "sensor_msgs"
   "pcl_conversions"
   "PCL"
+  "ament_index_cpp"
 )
 
 install(TARGETS map_pub

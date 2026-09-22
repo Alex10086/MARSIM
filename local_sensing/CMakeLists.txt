@@ -5,10 +5,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-set(CMAKE_BUILD_TYPE Release)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
-
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
 # find dependencies
@@ -24,7 +20,6 @@ find_package(pcl_conversions REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(ament_index_cpp REQUIRED)
-find_package(geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PCL REQUIRED)
 find_package(GLEW REQUIRED)
@@ -33,27 +28,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW3 REQUIRED glfw3)
 
 find_package(Boost REQUIRED COMPONENTS filesystem iostreams program_options system serialization)
-if(Boost_FOUND)
-  include_directories(${Boost_INCLUDE_DIRS})
-  link_directories(${Boost_LIBRARY_DIRS})
-endif()
-
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS ON)
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
-link_directories(${CMAKE_SOURCE_DIR}/lib)
 
 add_library(GLAD include/glad.c)
 set(LIBS ${LIBS} GLAD)
 
-include_directories(
-  SYSTEM
+target_include_directories(GLAD PRIVATE
   include
   ${Eigen_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
   ${OPENGL_INCLUDE_DIR}
   ${GLEW_INCLUDE_DIRS}
-  ${glfw3_INCLUDE_DIRS}
+  ${GLFW3_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}
 )
 
 # Disabled pcl_render_node for now - needs ROS 2 conversion
@@ -93,7 +79,16 @@ ament_target_dependencies(
   "PCL"
 )
 
-set(glfw3_LIBS /usr/lib/x86_64-linux-gnu/libglfw.so)
+target_include_directories(opengl_render_node PRIVATE
+  include
+  ${Eigen_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+  ${OPENGL_INCLUDE_DIR}
+  ${GLEW_INCLUDE_DIRS}
+  ${GLFW3_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}
+)
+
 target_link_libraries(opengl_render_node
   ${OpenCV_LIBS}
   ${Boost_LIBRARIES}

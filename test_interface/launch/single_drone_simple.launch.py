@@ -24,6 +24,13 @@ def generate_launch_description():
     init_yaw = LaunchConfiguration('init_yaw')
     odom_topic = LaunchConfiguration('odom_topic')
 
+    # Map path using FindPackageShare
+    map_path = PathJoinSubstitution([
+        FindPackageShare('map_generator'),
+        'resource',
+        'small_forest01cutoff.pcd'
+    ])
+
     # Quadrotor dynamics node
     quadrotor_dynamics_node = Node(
         package='mars_drone_sim',
@@ -65,7 +72,7 @@ def generate_launch_description():
         executable='map_pub',
         name='map_pub',
         output='screen',
-        arguments=['/home/jaeyoung/ros2_ws/src/MARSIM/map_generator/resource/small_forest01cutoff.pcd'],
+        arguments=[map_path],
         parameters=[{
             'add_boundary': 0,
             'is_bridge': 0,
@@ -84,13 +91,13 @@ def generate_launch_description():
         output='screen'
     )
 
-    # LiDAR simulation node
+    # LiDAR simulation node (OpenGL renderer)
     lidar_node = Node(
         package='local_sensing_node',
         executable='opengl_render_node',
         name='quad0_pcl_render_node',
         output='screen',
-        arguments=['/home/jaeyoung/ros2_ws/src/MARSIM/map_generator/resource/small_forest01cutoff.pcd'],
+        arguments=[map_path],
         remappings=[
             ('global_map', '/map_generator/global_cloud'),
             ('odometry', '/odom'),
@@ -121,9 +128,7 @@ def generate_launch_description():
             'collisioncheck_enable': 0,
             'collision_range': 0.5,
             'output_pcd': 0,
-            'uav_num': 1,
-        }],
-        env={'DISPLAY': ':0'}
+        }]
     )
 
     # Odom visualization node for 3D drone model and trajectory
@@ -172,7 +177,7 @@ def generate_launch_description():
         cascade_pid_node,
         map_generator_node,
         test_interface_node,
-        lidar_node,  # LiDAR simulation - re-enabled
-        odom_visualization_node,  # 3D drone model and trajectory
-        rviz_node,  # RViz visualization
+        lidar_node,
+        odom_visualization_node,
+        rviz_node,
     ])

@@ -1,17 +1,17 @@
 quad_pid_node:
   ros__parameters:
     # ── 位置环 ──
-    KP_XY: 2.0
-    KD_XY: 2.5
-    KP_Z: 8.0
-    KD_Z: 4.5
+    KP_XY: 0.8
+    KD_XY: 1.5
+    KP_Z: 2.5
+    KD_Z: 2.0
     KI_Z: 0.0
 
     # ── 姿态环 ──
-    KP_ATT: 10.0
-    KD_ATT: 1.5
-    KP_YAW: 5.0
-    KD_YAW: 1.0
+    KP_ATT: 4.0
+    KD_ATT: 0.8
+    KP_YAW: 2.0
+    KD_YAW: 0.5
 
     # ── 物理参数 ──
     mass: 1.9
@@ -20,10 +20,10 @@ quad_pid_node:
     k_T: 1.049e-10
 
     # ── 安全限幅 ──
-    max_tilt_deg: 30.0
-    max_horiz_acc: 5.0
-    max_vert_acc_up: 15.0
-    max_vert_acc_down: -2.0
+    max_tilt_deg: 15.0
+    max_horiz_acc: 2.0
+    max_vert_acc_up: 4.0
+    max_vert_acc_down: -1.0
     max_torque_xy: 5.0
     max_torque_z: 0.5
     max_rpm: 35000

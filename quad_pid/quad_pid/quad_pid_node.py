@@ -12,7 +12,7 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension, MultiArrayLayout
 
 from quad_pid.mixer import allocate
-from quad_pid.geometry import accel_to_attitude, yaw_from_quaternion, shortest_angle
+from quad_pid.geometry import accel_to_attitude, yaw_from_quaternion, shortest_angle, limit_horizontal_speed
 from quad_pid.goal import goal_is_active, sanitize_goal
 
 
@@ -262,6 +262,13 @@ class QuadPIDNode(Node):
             self.integral_z += e_pos[2] * (1.0 / self.get_parameter('control_rate').value)
             self.integral_z = max(-2.0, min(2.0, self.integral_z))
             a_des[2] += cfg['KI_Z'] * self.integral_z
+
+        # Safety S3limit: enforce a hard horizontal speed ceiling. The position
+        # PD has no speed setpoint (speed emerges as KP/KD*distance); remove
+        # only the acceleration component that would push past max_horiz_speed.
+        a_des[0], a_des[1] = limit_horizontal_speed(
+            a_des[0], a_des[1], self.state['vel'][0], self.state['vel'][1],
+            cfg['max_horiz_speed'])
 
         # Clamp accelerations (PD output only, before gravity compensation)
         a_des[0] = max(-cfg['max_horiz_acc'], min(cfg['max_horiz_acc'], a_des[0]))

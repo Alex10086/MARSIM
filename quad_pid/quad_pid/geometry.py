@@ -39,3 +39,24 @@ def shortest_angle(target: float, current: float) -> float:
     # Wrap to [-π, π]
     diff = math.atan2(math.sin(diff), math.cos(diff))
     return diff
+
+def limit_horizontal_speed(a_x: float, a_y: float,
+                           v_x: float, v_y: float,
+                           max_speed: float) -> tuple[float, float]:
+    """Cap horizontal speed by removing only the outward acceleration.
+
+    The position PD controller has no explicit speed setpoint: speed emerges as
+    (KP_XY/KD_XY)*distance. When the vehicle is already moving at `max_speed`,
+    any commanded acceleration with a positive component along the velocity
+    direction would increase speed further; that outward component is removed.
+    Braking (backward) and perpendicular components are preserved, so the drone
+    can still slow down and turn. Returns the adjusted (a_x, a_y).
+    """
+    speed = math.hypot(v_x, v_y)
+    if speed < max_speed or speed < 1e-9:
+        return a_x, a_y
+    ux, uy = v_x / speed, v_y / speed          # unit velocity
+    outward = a_x * ux + a_y * uy              # accel component along velocity
+    if outward <= 0.0:
+        return a_x, a_y                        # braking / neutral: keep
+    return a_x - outward * ux, a_y - outward * uy

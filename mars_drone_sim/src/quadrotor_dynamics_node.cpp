@@ -32,6 +32,13 @@ public:
         quadrotor.init(init_pos, init_q);
         quad_name = name;
         last_time = this->now();
+        // Initialize at hover RPM so the drone does not free-fall while waiting
+        // for the controller to start and publish its first /cmd_RPM message.
+        // (The Python controller takes ~1s to come up; without this the drone
+        // free-falls for that whole window.)
+        const double k_F = 3.0 * 8.98132e-9;   // must match quadrotor_dynamics.hpp
+        double hover_rpm = std::sqrt(mass * 9.81 / (4.0 * k_F));
+        RPM_input << hover_rpm, hover_rpm, hover_rpm, hover_rpm;
     }
 
 private:

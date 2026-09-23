@@ -13,6 +13,7 @@ from std_msgs.msg import Float32MultiArray, MultiArrayDimension, MultiArrayLayou
 
 from quad_pid.mixer import allocate
 from quad_pid.geometry import accel_to_attitude, yaw_from_quaternion, shortest_angle
+from quad_pid.goal import goal_is_active
 
 
 class QuadPIDNode(Node):
@@ -59,6 +60,10 @@ class QuadPIDNode(Node):
         self.declare_parameter('max_rpm', 35000)
         self.declare_parameter('min_rpm', 0)
         self.declare_parameter('goal_timeout', 1.0)
+        # RViz 2D Goal Pose sends the goal once per click (one-shot). Set
+        # goal_latched=true to keep tracking it indefinitely. Set false for a
+        # streaming planner that republishes every cycle.
+        self.declare_parameter('goal_latched', True)
         self.declare_parameter('max_horiz_dist', 5.0)
         self.declare_parameter('max_horiz_speed', 2.0)
         self.declare_parameter('max_descend_speed', 1.0)
@@ -132,6 +137,7 @@ class QuadPIDNode(Node):
             'max_torque_z': p('max_torque_z'),
             'max_rpm': p('max_rpm'), 'min_rpm': p('min_rpm'),
             'goal_timeout': p('goal_timeout'),
+            'goal_latched': p('goal_latched'),
             'max_horiz_dist': p('max_horiz_dist'),
             'max_horiz_speed': p('max_horiz_speed'),
             'max_descend_speed': p('max_descend_speed'),
@@ -196,8 +202,11 @@ class QuadPIDNode(Node):
         if now - self.state['odom_stamp'] > 0.5:
             return  # Stale odom → don't publish
 
-        if self.goal is None or (now - self.goal_stamp) > cfg['goal_timeout']:
-            # No goal or stale → hover at current position
+        if not goal_is_active(has_goal=self.goal is not None,
+                              goal_age=now - self.goal_stamp,
+                              goal_timeout=cfg['goal_timeout'],
+                              latched=cfg['goal_latched']):
+            # No goal (yet) or streaming goal went stale → hold current pose.
             pos_des = self.state['pos'].copy()
             yaw_des = yaw_from_quaternion(*self.state['quat'])
         else:

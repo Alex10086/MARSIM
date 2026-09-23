@@ -31,6 +31,9 @@ quad_pid_node:
 
     # ── 防炸 ──
     goal_timeout: 1.0
+    # RViz 2D Goal Pose publishes once per click; latched keeps tracking it.
+    # Set false when driven by a streaming planner (e.g. Nav2).
+    goal_latched: true
     max_horiz_dist: 5.0
     max_horiz_speed: 2.0
     max_descend_speed: 1.0

@@ -22,30 +22,40 @@ class QuadPIDNode(Node):
         self._init_state()
         self._create_subscriptions()
         self._create_publisher()
+        # Publish hover RPM immediately to eliminate the zero-thrust window
+        # between node startup and the first control timer tick.
+        self._publish_rpm(np.full(4, self._hover_rpm()))
         self._create_timer()
-        self.get_logger().info('quad_pid_node started')
+        self.get_logger().info(
+            f'quad_pid_node started (hover RPM={self._hover_rpm():.1f})')
+
+    def _hover_rpm(self):
+        """RPM per motor that exactly balances gravity (F = m*g)."""
+        mass = self.get_parameter('mass').value
+        k_F = self.get_parameter('k_F').value
+        return math.sqrt(mass * 9.81 / (4.0 * k_F))
 
     def _declare_params(self):
         """Declare all ROS parameters with defaults from YAML."""
-        self.declare_parameter('KP_XY', 0.8)
-        self.declare_parameter('KD_XY', 1.5)
-        self.declare_parameter('KP_Z', 2.5)
-        self.declare_parameter('KD_Z', 2.0)
+        self.declare_parameter('KP_XY', 0.5)
+        self.declare_parameter('KD_XY', 1.0)
+        self.declare_parameter('KP_Z', 1.0)
+        self.declare_parameter('KD_Z', 1.4)
         self.declare_parameter('KI_Z', 0.0)
-        self.declare_parameter('KP_ATT', 4.0)
-        self.declare_parameter('KD_ATT', 0.8)
-        self.declare_parameter('KP_YAW', 2.0)
-        self.declare_parameter('KD_YAW', 0.5)
+        self.declare_parameter('KP_ATT', 0.2)
+        self.declare_parameter('KD_ATT', 0.04)
+        self.declare_parameter('KP_YAW', 0.2)
+        self.declare_parameter('KD_YAW', 0.05)
         self.declare_parameter('mass', 1.9)
         self.declare_parameter('arm_length', 0.22)
-        self.declare_parameter('k_F', 2.6944e-8)
-        self.declare_parameter('k_T', 1.049e-10)
-        self.declare_parameter('max_tilt_deg', 15.0)
-        self.declare_parameter('max_horiz_acc', 2.0)
+        self.declare_parameter('k_F', 2.694396e-8)
+        self.declare_parameter('k_T', 3.508e-10)
+        self.declare_parameter('max_tilt_deg', 20.0)
+        self.declare_parameter('max_horiz_acc', 3.0)
         self.declare_parameter('max_vert_acc_up', 4.0)
-        self.declare_parameter('max_vert_acc_down', -1.0)
-        self.declare_parameter('max_torque_xy', 5.0)
-        self.declare_parameter('max_torque_z', 0.5)
+        self.declare_parameter('max_vert_acc_down', -4.0)
+        self.declare_parameter('max_torque_xy', 1.0)
+        self.declare_parameter('max_torque_z', 0.3)
         self.declare_parameter('max_rpm', 35000)
         self.declare_parameter('min_rpm', 0)
         self.declare_parameter('goal_timeout', 1.0)
@@ -74,6 +84,7 @@ class QuadPIDNode(Node):
         self.integral_z = 0.0
         self._last_log_time = 0.0
         self._has_odom = False  # track whether we've ever received odom
+        self._debug_tick = 0
 
     def _create_subscriptions(self):
         qos = QoSProfile(
@@ -179,7 +190,7 @@ class QuadPIDNode(Node):
         # ── Freshness checks ──
         if not self._has_odom:
             # No odom ever received → publish known hover RPM
-            self._publish_rpm(np.full(4, 13150.0))
+            self._publish_rpm(np.full(4, self._hover_rpm()))
             return
 
         if now - self.state['odom_stamp'] > 0.5:
@@ -244,11 +255,13 @@ class QuadPIDNode(Node):
         roll_des = max(-mt, min(mt, roll_des))
         pitch_des = max(-mt, min(mt, pitch_des))
 
-        # Total thrust
+        # Total thrust: F = m·|a_des|, where a_des is the full desired world
+        # acceleration (already includes gravity compensation).
+        # Do NOT divide by cos(tilt): |a_des| and its direction already encode
+        # the required thrust magnitude; dividing inflates thrust whenever the
+        # drone is tilted and causes runaway climb.
         acc_mag = math.sqrt(a_des[0]**2 + a_des[1]**2 + a_des[2]**2)
-        current_tilt = self._compute_current_tilt(*self.state['quat'])
-        cos_tilt = max(math.cos(current_tilt), 0.1)  # guard division by zero
-        F_total = cfg['mass'] * acc_mag / cos_tilt
+        F_total = cfg['mass'] * acc_mag
         F_total = max(0.0, min(4.0 * cfg['mass'] * 9.81, F_total))
 
         # ── Layer 3: attitude error → torque ──

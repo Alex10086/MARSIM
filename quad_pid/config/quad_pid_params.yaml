@@ -1,31 +1,31 @@
 quad_pid_node:
   ros__parameters:
-    # ── 位置环 ──
-    KP_XY: 0.8
-    KD_XY: 1.5
-    KP_Z: 2.5
-    KD_Z: 2.0
+    # ── 位置环 (ωn≈0.7~1.0 rad/s) ──
+    KP_XY: 0.5
+    KD_XY: 1.0
+    KP_Z: 1.0
+    KD_Z: 1.4
     KI_Z: 0.0
 
-    # ── 姿态环 ──
-    KP_ATT: 4.0
-    KD_ATT: 0.8
-    KP_YAW: 2.0
-    KD_YAW: 0.5
+    # ── 姿态环 (I_xx=2.64e-3, ωn≈8 rad/s, ζ≈0.8) ──
+    KP_ATT: 0.2
+    KD_ATT: 0.04
+    KP_YAW: 0.2
+    KD_YAW: 0.05
 
-    # ── 物理参数 ──
+    # ── 物理参数 (必须与 mars_drone_sim 源码一致) ──
     mass: 1.9
     arm_length: 0.22
-    k_F: 2.6944e-8
-    k_T: 1.049e-10
+    k_F: 2.694396e-8
+    k_T: 3.508e-10
 
     # ── 安全限幅 ──
-    max_tilt_deg: 15.0
-    max_horiz_acc: 2.0
+    max_tilt_deg: 20.0
+    max_horiz_acc: 3.0
     max_vert_acc_up: 4.0
-    max_vert_acc_down: -1.0
-    max_torque_xy: 5.0
-    max_torque_z: 0.5
+    max_vert_acc_down: -4.0
+    max_torque_xy: 1.0
+    max_torque_z: 0.3
     max_rpm: 35000
     min_rpm: 0
 

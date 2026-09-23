@@ -5,7 +5,7 @@ Same as single_drone_simple.launch.py but with quad_pid replacing cascadePID.
 """
 import os
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -169,11 +169,18 @@ def generate_launch_description():
         init_z_arg,
         init_yaw_arg,
         odom_topic_arg,
-        quadrotor_dynamics_node,
+        # Start the controller FIRST so it is already publishing hover RPM
+        # before the dynamics node comes up. Otherwise the dynamics runs with
+        # zero RPM for ~1s (Python/numpy startup) and the drone free-falls.
         quad_pid_node,
         map_generator_node,
-        test_interface_node,
-        lidar_node,
-        odom_visualization_node,
         rviz_node,
+        # Delay everything that consumes/produces drone state until the
+        # controller is up and publishing.
+        TimerAction(period=2.0, actions=[
+            quadrotor_dynamics_node,
+            test_interface_node,
+            lidar_node,
+            odom_visualization_node,
+        ]),
     ])

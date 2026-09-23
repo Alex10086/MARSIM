@@ -13,7 +13,7 @@ from std_msgs.msg import Float32MultiArray, MultiArrayDimension, MultiArrayLayou
 
 from quad_pid.mixer import allocate
 from quad_pid.geometry import accel_to_attitude, yaw_from_quaternion, shortest_angle
-from quad_pid.goal import goal_is_active
+from quad_pid.goal import goal_is_active, sanitize_goal
 
 
 class QuadPIDNode(Node):
@@ -64,6 +64,10 @@ class QuadPIDNode(Node):
         # goal_latched=true to keep tracking it indefinitely. Set false for a
         # streaming planner that republishes every cycle.
         self.declare_parameter('goal_latched', True)
+        # Reject goals farther than this (horizontally) from the vehicle. A
+        # click near the horizon in RViz projects onto the ground plane
+        # kilometres away; such a goal must not be tracked.
+        self.declare_parameter('max_goal_dist', 50.0)
         self.declare_parameter('max_horiz_dist', 5.0)
         self.declare_parameter('max_horiz_speed', 2.0)
         self.declare_parameter('max_descend_speed', 1.0)
@@ -90,6 +94,7 @@ class QuadPIDNode(Node):
         self._last_log_time = 0.0
         self._has_odom = False  # track whether we've ever received odom
         self._debug_tick = 0
+        self._bad_goal_warned = False  # warn once per rejected goal
 
     def _create_subscriptions(self):
         qos = QoSProfile(
@@ -138,6 +143,7 @@ class QuadPIDNode(Node):
             'max_rpm': p('max_rpm'), 'min_rpm': p('min_rpm'),
             'goal_timeout': p('goal_timeout'),
             'goal_latched': p('goal_latched'),
+            'max_goal_dist': p('max_goal_dist'),
             'max_horiz_dist': p('max_horiz_dist'),
             'max_horiz_speed': p('max_horiz_speed'),
             'max_descend_speed': p('max_descend_speed'),
@@ -211,13 +217,29 @@ class QuadPIDNode(Node):
             yaw_des = yaw_from_quaternion(*self.state['quat'])
         else:
             g = self.goal.pose.position
-            pos_des = np.array([g.x, g.y, g.z])
+            cur = self.state['pos']
+            gx, gy, gz, ok = sanitize_goal(g.x, g.y, g.z,
+                                           cur[0], cur[1], cur[2],
+                                           cfg['max_goal_dist'])
             q = self.goal.pose.orientation
-            # If orientation is identity, keep current yaw
-            if abs(q.x) < 1e-9 and abs(q.y) < 1e-9 and abs(q.z) < 1e-9 and abs(q.w - 1.0) < 1e-9:
+            if not ok:
+                # Unusable goal (horizon click kilometres away, or NaN):
+                # ignore it and hold the current pose.
+                if not self._bad_goal_warned:
+                    self._bad_goal_warned = True
+                    self.get_logger().warn(
+                        f'Ignoring goal ({g.x:.1f},{g.y:.1f},{g.z:.1f}): '
+                        f'farther than {cfg["max_goal_dist"]:.0f}m from vehicle '
+                        f'or invalid. Holding position.')
+                pos_des = self.state['pos'].copy()
                 yaw_des = yaw_from_quaternion(*self.state['quat'])
             else:
-                yaw_des = yaw_from_quaternion(q.x, q.y, q.z, q.w)
+                pos_des = np.array([gx, gy, gz])
+                # If orientation is identity, keep current yaw
+                if abs(q.x) < 1e-9 and abs(q.y) < 1e-9 and abs(q.z) < 1e-9 and abs(q.w - 1.0) < 1e-9:
+                    yaw_des = yaw_from_quaternion(*self.state['quat'])
+                else:
+                    yaw_des = yaw_from_quaternion(q.x, q.y, q.z, q.w)
 
         # Safety S2: distance limiting
         delta = pos_des - self.state['pos']

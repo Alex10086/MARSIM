@@ -34,6 +34,9 @@ quad_pid_node:
     # RViz 2D Goal Pose publishes once per click; latched keeps tracking it.
     # Set false when driven by a streaming planner (e.g. Nav2).
     goal_latched: true
+    # Reject goals whose horizontal distance from the vehicle exceeds this.
+    # A near-horizon click in RViz projects kilometres away.
+    max_goal_dist: 50.0
     max_horiz_dist: 5.0
     max_horiz_speed: 2.0
     max_descend_speed: 1.0

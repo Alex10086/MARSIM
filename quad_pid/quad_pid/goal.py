@@ -34,3 +34,27 @@ def goal_is_active(has_goal, goal_age, goal_timeout, latched):
     if latched:
         return True
     return goal_age <= goal_timeout
+
+
+def sanitize_goal(gx, gy, gz, cx, cy, cz, max_goal_dist):
+    """Sanitize a raw goal against 2D-tool / out-of-range artefacts.
+
+    Returns ``(x, y, z, ok)``.
+
+    * ``z <= 0`` is treated as "height unspecified": this is exactly what a 2D
+      tool such as RViz's 2D Goal Pose emits (it has no z and always publishes
+      0), so the current height is kept rather than diving to the ground.
+    * If the goal's horizontal distance from the vehicle (cx, cy) exceeds
+      ``max_goal_dist`` it is rejected (``ok=False``).  A click near the
+      horizon projects onto the ground plane kilometres away.
+    * NaN / inf coordinates are rejected.
+    """
+    import math as _math
+    x, y, z = float(gx), float(gy), float(gz)
+    if not _math.isfinite(x) or not _math.isfinite(y) or not _math.isfinite(z):
+        return x, y, z, False
+    if z <= 0.0:
+        z = float(cz)
+    if _math.hypot(x - cx, y - cy) > max_goal_dist:
+        return x, y, z, False
+    return x, y, z, True

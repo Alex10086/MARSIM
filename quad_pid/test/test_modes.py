@@ -118,3 +118,188 @@ def test_select_source_auto_falls_back_to_the_only_usable_source():
 def test_select_source_forced_mode_ignores_the_other_source():
     # velocity 档下，哪怕位置目标更新，也不许位置源抢走控制权
     assert select_source(VELOCITY, True, 99.0, True, 1.0) == VELOCITY
+
+
+# ── SetpointResolver：模式状态机 ────────────────────────────────────────
+import numpy as np
+from quad_pid.modes import SetpointResolver
+
+CFG = {
+    'twist_max_vx': 1.5, 'twist_max_vy': 1.5, 'twist_max_wz': 0.8,
+    'twist_target_height': -1.0, 'twist_follow_z': False,
+    'cmd_vel_timeout': 0.5,
+}
+
+def _r(leash=5.0):
+    return SetpointResolver(leash=leash)
+
+def _upd(r, *, mode='auto', dt=0.1, pos=(0., 0., 5.), yaw=0.0,
+         goal_active=False, goal_stamp=0.0, goal_xyz=None, goal_yaw=None,
+         twist_fresh=False, twist_stamp=0.0, vx=0.0, vy=0.0, vz=0.0, wz=0.0):
+    return r.update(mode=mode, dt=dt, cur_pos=np.array(pos), cur_yaw=yaw,
+                    goal_active=goal_active, goal_stamp=goal_stamp,
+                    goal_xyz=goal_xyz, goal_yaw=goal_yaw,
+                    twist_fresh=twist_fresh, twist_stamp=twist_stamp,
+                    twist_vx=vx, twist_vy=vy, twist_vz=vz, twist_wz=wz, cfg=CFG)
+
+
+def test_no_command_ever_holds_current_pose():
+    # 与今天的行为逐位一致：无目标无 Twist → 保持当前位姿
+    r = _r()
+    p, y, v, s = _upd(r, pos=(3.0, 4.0, 5.0), yaw=1.1)
+    assert s == HOLD
+    assert p == pytest.approx(np.array([3.0, 4.0, 5.0]))
+    assert y == pytest.approx(1.1)
+    assert v == pytest.approx(np.zeros(3))
+
+
+def test_goal_mode_returns_goal_and_zero_velocity_feedforward():
+    r = _r()
+    p, y, v, s = _upd(r, mode=POSITION, goal_active=True, goal_stamp=1.0,
+                      goal_xyz=(7.0, 8.0, 3.0), goal_yaw=0.4)
+    assert s == POSITION
+    assert p == pytest.approx(np.array([7.0, 8.0, 3.0]))
+    assert y == pytest.approx(0.4)
+    assert v == pytest.approx(np.zeros(3))     # Review Focus #9
+
+
+def test_first_velocity_tick_is_bumpless():
+    # Review Focus #3: 首个 tick 的设定点必须 ≈ 当前位姿，不能跳
+    r = _r()
+    p, y, v, s = _upd(r, mode=VELOCITY, pos=(3.0, 4.0, 5.0), yaw=0.7,
+                      twist_fresh=True, twist_stamp=1.0, vx=1.0, dt=0.0)
+    assert s == VELOCITY
+    assert p == pytest.approx(np.array([3.0, 4.0, 5.0]))
+    assert y == pytest.approx(0.7)
+
+
+def test_velocity_mode_advances_setpoint_and_feeds_world_velocity():
+    r = _r()
+    _upd(r, mode=VELOCITY, twist_fresh=True, dt=0.0, vx=1.0)      # latch
+    p, y, v, s = _upd(r, mode=VELOCITY, twist_fresh=True, dt=0.1, vx=1.0)
+    assert p[0] == pytest.approx(0.1, abs=1e-9)
+    assert p[1] == pytest.approx(0.0, abs=1e-9)
+    assert v == pytest.approx(np.array([1.0, 0.0, 0.0]))          # 世界系前馈
+
+
+def test_velocity_feedforward_rotates_with_yaw():
+    # Review Focus #1
+    r = _r()
+    yaw = math.radians(-54.0)
+    _upd(r, mode=VELOCITY, yaw=yaw, twist_fresh=True, dt=0.0, vx=1.0)
+    p, y, v, s = _upd(r, mode=VELOCITY, yaw=yaw, twist_fresh=True, dt=0.1, vx=1.0)
+    assert v[0] == pytest.approx(math.cos(yaw), abs=1e-9)
+    assert v[1] == pytest.approx(math.sin(yaw), abs=1e-9)
+    assert p[0] == pytest.approx(0.1 * math.cos(yaw), abs=1e-9)
+    assert p[1] == pytest.approx(0.1 * math.sin(yaw), abs=1e-9)
+
+
+def test_height_is_latched_on_entering_velocity_mode():
+    # D4
+    r = _r()
+    _upd(r, mode=VELOCITY, pos=(0., 0., 7.3), dt=0.0, twist_fresh=True)
+    p, *_ = _upd(r, mode=VELOCITY, pos=(0., 0., 7.3), dt=0.1, twist_fresh=True, vx=1.0)
+    assert p[2] == pytest.approx(7.3)
+
+
+def test_twist_target_height_overrides_latch():
+    cfg = dict(CFG, twist_target_height=12.0)
+    r = _r()
+    p, *_ = r.update(mode=VELOCITY, dt=0.1, cur_pos=np.array([0., 0., 7.3]),
+                     cur_yaw=0.0, goal_active=False, goal_stamp=0.0,
+                     goal_xyz=None, goal_yaw=None, twist_fresh=True,
+                     twist_stamp=1.0, twist_vx=1.0, twist_vy=0.0,
+                     twist_vz=0.0, twist_wz=0.0, cfg=cfg)
+    assert p[2] == pytest.approx(12.0)
+
+
+def test_twist_follow_z_integrates_linear_z():
+    cfg = dict(CFG, twist_follow_z=True)
+    r = _r()
+    r.update(mode=VELOCITY, dt=0.0, cur_pos=np.array([0., 0., 5.0]), cur_yaw=0.0,
+             goal_active=False, goal_stamp=0.0, goal_xyz=None, goal_yaw=None,
+             twist_fresh=True, twist_stamp=1.0, twist_vx=0.0, twist_vy=0.0,
+             twist_vz=0.5, twist_wz=0.0, cfg=cfg)
+    p, *_ = r.update(mode=VELOCITY, dt=0.1, cur_pos=np.array([0., 0., 5.0]),
+                     cur_yaw=0.0, goal_active=False, goal_stamp=0.0,
+                     goal_xyz=None, goal_yaw=None, twist_fresh=True,
+                     twist_stamp=1.0, twist_vx=0.0, twist_vy=0.0,
+                     twist_vz=0.5, twist_wz=0.0, cfg=cfg)
+    assert p[2] == pytest.approx(5.05, abs=1e-9)
+
+
+def test_stale_twist_freezes_the_setpoint_never_keeps_integrating():
+    # Review Focus #2 —— 最关键的安全属性
+    r = _r()
+    for _ in range(5):
+        _upd(r, mode=VELOCITY, twist_fresh=True, dt=0.1, vx=1.0)
+    frozen, _, _, s = _upd(r, mode=VELOCITY, twist_fresh=True, dt=0.1, vx=1.0)
+    for _ in range(50):
+        stalled, _, vel, s2 = _upd(r, mode=VELOCITY, twist_fresh=False, dt=0.1, vx=1.0)
+        assert s2 == HOLD
+        assert stalled == pytest.approx(frozen)      # 冻结，不前进
+        assert vel == pytest.approx(np.zeros(3))     # 前馈归零 → 主动刹车
+
+
+def test_velocity_mode_without_any_twist_holds_current_pose():
+    # control_mode="velocity" 但 Nav2 还没起来 → 必须保持当前位姿而不是乱飞
+    r = _r()
+    p, y, v, s = _upd(r, mode=VELOCITY, pos=(1.0, 2.0, 3.0), yaw=0.2, twist_fresh=False)
+    assert s == HOLD
+    assert p == pytest.approx(np.array([1.0, 2.0, 3.0]))
+
+
+def test_mode_switch_back_and_forth_is_bumpless():
+    r = _r()
+    for _ in range(5):
+        _upd(r, mode=VELOCITY, pos=(0., 0., 5.), twist_fresh=True, dt=0.1, vx=1.0)
+    _upd(r, mode=POSITION, pos=(0.5, 0., 5.), goal_active=True, goal_stamp=9.0,
+         goal_xyz=(20.0, 0.0, 5.0), goal_yaw=0.0, dt=0.1)
+    # 重新进入 velocity：必须重新锁存到当前位置，而不是复用旧 ref
+    p, _, _, s = _upd(r, mode=VELOCITY, pos=(0.5, 0., 5.), twist_fresh=True,
+                      twist_stamp=20.0, dt=0.0, vx=1.0)
+    assert s == VELOCITY
+    assert p == pytest.approx(np.array([0.5, 0.0, 5.0]))
+
+
+def test_auto_mode_twist_wins_while_nav2_streams():
+    r = _r()
+    p, _, _, s = _upd(r, mode='auto', goal_active=True, goal_stamp=1.0,
+                      goal_xyz=(50.0, 50.0, 5.0), goal_yaw=0.0,
+                      twist_fresh=True, twist_stamp=9.0, dt=0.1, vx=1.0)
+    assert s == VELOCITY
+
+
+def test_leash_holds_setpoint_when_vehicle_cannot_move():
+    # Review Focus #6
+    r = _r(leash=2.0)
+    for _ in range(500):
+        p, *_ = _upd(r, mode=VELOCITY, pos=(0., 0., 5.), dt=0.1, vx=1.5, twist_fresh=True)
+    assert math.hypot(p[0], p[1]) == pytest.approx(2.0, abs=1e-6)
+
+
+def test_yaw_rate_integrates_and_wraps():
+    # NOTE: use a rate inside twist_max_wz (=0.8) or clamp_twist will saturate it
+    r = _r()
+    _upd(r, mode=VELOCITY, yaw=math.pi - 0.01, dt=0.0, twist_fresh=True, wz=0.5)
+    _, y, _, _ = _upd(r, mode=VELOCITY, yaw=math.pi - 0.01, dt=0.05,
+                      twist_fresh=True, wz=0.5)
+    # pi - 0.01 + 0.5*0.05 = pi + 0.015 -> wrapped to -pi + 0.015
+    assert abs(y) <= math.pi
+    assert y == pytest.approx(-math.pi + 0.015, abs=1e-9)
+
+
+def test_yaw_rate_is_clamped():
+    r = _r()
+    _upd(r, mode=VELOCITY, dt=0.0, twist_fresh=True, wz=0.0)
+    _, y, _, _ = _upd(r, mode=VELOCITY, dt=1.0, twist_fresh=True, wz=99.0)
+    assert y == pytest.approx(0.8, abs=1e-9)      # twist_max_wz
+
+
+def test_hold_after_velocity_session_returns_frozen_reference():
+    r = _r()
+    for _ in range(3):
+        _upd(r, mode=VELOCITY, twist_fresh=True, dt=0.1, vx=1.0)
+    p, _, _, s = _upd(r, mode=VELOCITY, twist_fresh=False, dt=0.1, pos=(0.0, 0.0, 5.0))
+    assert s == HOLD
+    assert p[0] > 0.0     # 冻结在 leash 内的参考点（而非回到原点）

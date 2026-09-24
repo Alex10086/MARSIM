@@ -16,7 +16,7 @@ from quad_pid.geometry import (accel_to_attitude, accel_to_attitude_yaw,
                                yaw_from_quaternion, shortest_angle,
                                limit_horizontal_speed)
 from quad_pid.goal import goal_is_active, sanitize_goal
-from quad_pid.modes import SetpointResolver
+from quad_pid.modes import SetpointResolver, clamp_dt
 
 
 class QuadPIDNode(Node):
@@ -87,6 +87,7 @@ class QuadPIDNode(Node):
         self.declare_parameter('twist_max_vx', 1.5)
         self.declare_parameter('twist_max_vy', 1.5)
         self.declare_parameter('twist_max_wz', 0.8)
+        self.declare_parameter('twist_max_vz', 1.0)
         self.declare_parameter('twist_target_height', -1.0)
         self.declare_parameter('twist_follow_z', False)
         self.declare_parameter('publish_setpoint', False)
@@ -119,6 +120,7 @@ class QuadPIDNode(Node):
             leash=self.get_parameter('max_horiz_dist').value)
         self._last_tick = now      # wall clock, for the measured control dt
         self._last_source = None   # log source transitions once
+        self._bad_mode_warned = False   # warn once per bad control_mode
 
     def _create_subscriptions(self):
         qos = QoSProfile(
@@ -189,6 +191,7 @@ class QuadPIDNode(Node):
             'twist_max_vx': p('twist_max_vx'),
             'twist_max_vy': p('twist_max_vy'),
             'twist_max_wz': p('twist_max_wz'),
+            'twist_max_vz': p('twist_max_vz'),
             'twist_target_height': p('twist_target_height'),
             'twist_follow_z': p('twist_follow_z'),
             'publish_setpoint': p('publish_setpoint'),
@@ -254,9 +257,18 @@ class QuadPIDNode(Node):
         # Measured dt (clamped), not the nominal 1/control_rate: the setpoint
         # integrator must advance at the commanded speed even when the timer
         # jitters, and a suspended process must not advance it by seconds.
-        dt = min(max(now - self._last_tick, 0.0), 0.1)   # Review Focus #8
+        dt = clamp_dt(now - self._last_tick)   # Review Focus #8
         self._last_tick = now
         cfg = self._read_params()
+        # An unrecognised control_mode silently degrades to 'auto' inside
+        # select_source, which would quietly enable the documented auto gotcha
+        # (a latched position goal reclaiming control). Say so instead.
+        if cfg['control_mode'] not in ('position', 'velocity', 'auto'):
+            if not self._bad_mode_warned:
+                self._bad_mode_warned = True
+                self.get_logger().warn(
+                    f"Unknown control_mode {cfg['control_mode']!r}; falling "
+                    f"back to 'auto'. Valid: position | velocity | auto")
         self.resolver.leash = cfg['max_horiz_dist']      # hot reload
 
         # Current yaw is needed early: the resolver rotates the body-frame
@@ -323,8 +335,6 @@ class QuadPIDNode(Node):
         if source != self._last_source:
             self.get_logger().info(f'control source -> {source}')
             self._last_source = source
-        if cfg['publish_setpoint']:
-            self._publish_setpoint(pos_des, yaw_des)
 
         # Safety S2: distance limiting
         delta = pos_des - self.state['pos']
@@ -332,6 +342,11 @@ class QuadPIDNode(Node):
         if dist > cfg['max_horiz_dist']:
             delta = delta * (cfg['max_horiz_dist'] / dist)
             pos_des = self.state['pos'] + delta
+
+        # Publish AFTER the S2 clamp: the topic exists to show the setpoint the
+        # controller is actually chasing, and L1 uses the post-clamp pos_des.
+        if cfg['publish_setpoint']:
+            self._publish_setpoint(pos_des, yaw_des)
 
         # ── Layer 1: Position error → desired acceleration (PD) ──
         e_pos = pos_des - self.state['pos']

@@ -46,7 +46,7 @@ Two useful debug parameters:
 
 | Parameter | Default | Purpose |
 |---|---|---|
-| `publish_setpoint` | `false` | publish `/quad_pid/setpoint` (`PoseStamped`, world frame) — the setpoint the controller is actually chasing. In RViz this separates "the command was wrong" from "the controller failed to track it". |
+| `publish_setpoint` | `false` | publish `/quad_pid/setpoint` (`PoseStamped`, world frame) — the setpoint the controller is actually chasing, after the S2 carrot clamp. In RViz this separates "the command was wrong" from "the controller failed to track it". |
 | `verbose` | `false` (YAML sets `true`) | 1 Hz position/RPM/tilt log |
 
 ## Twist contract
@@ -87,8 +87,13 @@ both reliabilities.
 ## Parameters
 
 All parameters are declared with defaults and re-read every tick, so
-`ros2 param set` takes effect live — **except `cmd_vel_topic`, which is read
-once at startup** to create the subscription (changing it needs a restart).
+`ros2 param set` takes effect live — **except two startup-only parameters**:
+`cmd_vel_topic` (read once to create the subscription) and `control_rate` (read
+once to create the timer). Changing either needs a restart.
+
+An unrecognised `control_mode` falls back to `auto`; the node logs a warning
+once when it sees one, because that fallback silently enables the `auto`
+gotcha described above.
 
 Gains:
 
@@ -134,6 +139,7 @@ Command sources and Twist:
 | `cmd_vel_timeout` | 0.5 | s; older than this = stale = freeze |
 | `twist_max_vx` / `twist_max_vy` | 1.5 / 1.5 | saturate the **command** |
 | `twist_max_wz` | 0.8 | rad/s |
+| `twist_max_vz` | 1.0 | m/s; rate limit for `linear.z` when `twist_follow_z` is on |
 | `twist_target_height` | -1.0 | >0 = cruise at this altitude; ≤0 = latch current altitude on entering velocity mode |
 | `twist_follow_z` | false | integrate `linear.z` (Nav2 always sends 0 — leave false) |
 | `publish_setpoint` | false | |
@@ -144,8 +150,18 @@ Command sources and Twist:
 
 `twist_max_vx/vy` bound the **commanded** velocity, not the **achieved** one: the
 position PD catching up to the advancing reference transiently peaks above it
-(measured 1.9 m/s against a 1.5 limit). The hard ceiling on achieved speed is
-`max_horiz_speed`. For a strict cap, set `max_horiz_speed` to the same value.
+(measured 1.9 m/s against a 1.5 limit, ~21% overshoot). `max_horiz_speed` is the
+**achieved**-speed ceiling — the governor removes the outward acceleration
+component as soon as speed reaches it, so the overshoot collapses to about one
+tick's worth.
+
+Setting `max_horiz_speed` equal to `twist_max_*` therefore makes the achieved
+speed honour the command limit (this is what `config/quad_pid_nav.yaml` does, so
+Nav2's `vx_max`/`vy_max` assumption holds). It does not make the cap
+instantaneous — it bounds the overshoot to roughly a tick, not to zero. The cost
+is diagonal throughput: a composite `√2 × 1.4 ≈ 1.98` command is capped at 1.4.
+If you want full diagonal throughput, raise `max_horiz_speed` to `√2 × vx_max`
+and accept the transient overshoot.
 
 ## Running
 
@@ -192,7 +208,9 @@ ros2 param set /quad_pid_node control_mode position    # or velocity / auto
 ```
 
 Mode switches are bumpless: entering velocity mode latches the setpoint reference
-onto the vehicle's current pose, so `pos_des` never steps.
+onto the vehicle's current pose, so the **command** does not jump. (`pos_des`
+itself does change — from the old goal to the current pose — but that is what
+latching means, and it is the reason the command stays smooth.)
 
 ## Gotchas learned the hard way
 

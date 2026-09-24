@@ -22,12 +22,19 @@ quad_pid_node:
     cmd_vel_timeout: 0.5
 
     # 与 Nav2 参数文件里的 vx_max / vy_max 对齐。
-    # 注意区分：twist_max_* 钳的是【指令】；位置 PD 追赶前进中的参考点时会
-    # 短暂超速（实测 vx 限 1.5 时峰值约 1.9），真正的【达到速度】硬上限是
-    # max_horiz_speed。所以这里留出余量：合成速度 √(1.4²+1.4²)≈1.98 < 2.0。
+    #
+    # 注意区分【指令】与【达到】速度：
+    #   twist_max_*      钳的是【指令】
+    #   max_horiz_speed  是【达到】速度的硬上限（调速器一旦到达就剔掉沿速度方向的
+    #                    加速度分量，所以超调被压到约一个 tick 的量）
+    # 两者相等时，达到速度不会超过 Nav2 规划所假设的 vx_max。
+    # 代价：斜向指令合成 √2×1.4 ≈ 1.98 会被压到 1.4，斜向吞吐降低。若要完整
+    # 斜向吞吐，把 max_horiz_speed 提到 √2×vx_max 并接受约 21% 的瞬时超调。
     twist_max_vx: 1.4
     twist_max_vy: 1.4
     twist_max_wz: 0.8
+    twist_max_vz: 1.0
+    max_horiz_speed: 1.4
 
     # Nav2 做 2D 导航，linear.z 恒为 0；高度由 quad_pid 自己锁存并保持。
     twist_target_height: -1.0
@@ -37,10 +44,8 @@ quad_pid_node:
     # 的语义（velocity 模式下本参数不参与仲裁，仅影响切回位置模式时）。
     goal_latched: false
 
-    max_horiz_speed: 2.0
-
     # 排障锚点：在 RViz 里画 /quad_pid/setpoint，可直接看出控制器在追什么，
-    # 一眼区分「Nav2 指令错」还是「控制器跟踪错」。
+    # 一眼区分「Nav2 指令错」还是「控制器跟踪错」。发布内容已含 S2 胡萝卜限幅。
     publish_setpoint: true
 
     verbose: true

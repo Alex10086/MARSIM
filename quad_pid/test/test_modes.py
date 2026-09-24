@@ -126,6 +126,7 @@ from quad_pid.modes import SetpointResolver
 
 CFG = {
     'twist_max_vx': 1.5, 'twist_max_vy': 1.5, 'twist_max_wz': 0.8,
+    'twist_max_vz': 1.0,
     'twist_target_height': -1.0, 'twist_follow_z': False,
     'cmd_vel_timeout': 0.5,
 }
@@ -321,3 +322,97 @@ def test_hold_does_not_travel_to_a_stale_reference_after_a_mode_round_trip():
     assert s == HOLD
     assert p == pytest.approx(np.array([50.0, 0.0, 5.0]))
     assert v == pytest.approx(np.zeros(3))
+
+
+# ── 最终评审发现（code review findings）──────────────────────────────
+from quad_pid.modes import clamp_dt, MIN_HEIGHT, MAX_HEIGHT
+
+
+def test_clamp_dt_bounds_a_suspended_process():
+    # Review Focus #8: a process suspended by the debugger/scheduler must not
+    # advance the setpoint integrator by seconds' worth in one tick.
+    assert clamp_dt(5.0) == pytest.approx(0.1)
+    assert clamp_dt(-1.0) == pytest.approx(0.0)
+    assert clamp_dt(0.02) == pytest.approx(0.02)
+    assert clamp_dt(float('nan')) == pytest.approx(0.0)
+    assert clamp_dt(1e308) == pytest.approx(0.1)
+
+
+def test_velocity_feedforward_is_exactly_zero_for_position_and_hold():
+    # Review Focus #9: the node computes e_vel = vel_des - vel, so position and
+    # hold must return EXACTLY zeros. Anything else perturbs the pre-Twist
+    # behaviour that was verified bit-identical.
+    r = _r()
+    _, _, v_pos, s_pos = _upd(r, mode=POSITION, goal_active=True, goal_stamp=1.0,
+                              goal_xyz=(1.0, 1.0, 1.0), goal_yaw=0.0)
+    assert s_pos == POSITION
+    assert not v_pos.any()
+
+    r2 = _r()
+    _, _, v_hold, s_hold = _upd(r2, pos=(2.0, 3.0, 4.0))
+    assert s_hold == HOLD
+    assert not v_hold.any()
+
+
+def test_non_finite_odom_never_poisons_the_reference():
+    # Code review finding #1. A single corrupt odom sample must not be consumed:
+    # latching a NaN into ref_xy is ABSORBING (advance_setpoint's `d > leash` is
+    # False for NaN, so it is rewritten every tick), and the downstream clamps
+    # turn NaN into a FULL-SCALE command, so the end-of-pipeline NaN guard never
+    # trips. Without the guard the drone flies max acceleration until odom
+    # recovers or the source changes.
+    r = _r()
+    good, _, _, _ = _upd(r, mode=VELOCITY, pos=(1.0, 2.0, 5.0), twist_fresh=True,
+                         dt=0.1, vx=1.0)
+    bad = np.array([float('nan'), float('inf'), float('-inf')])
+    p, y, v, s = _upd(r, mode=VELOCITY, pos=tuple(bad), twist_fresh=True,
+                      dt=0.1, vx=1.0)
+    assert s == HOLD
+    assert np.all(np.isfinite(p))
+    assert p == pytest.approx(good)          # held the last good command
+    assert not v.any()
+    # ... and the reference is NOT poisoned: a good sample resumes normally.
+    p2, _, _, s2 = _upd(r, mode=VELOCITY, pos=(1.1, 2.0, 5.0), twist_fresh=True,
+                        dt=0.1, vx=1.0)
+    assert s2 == VELOCITY
+    assert np.all(np.isfinite(p2))
+
+
+def test_non_finite_odom_before_any_good_tick_is_safe():
+    r = _r()
+    p, y, v, s = _upd(r, mode=VELOCITY, pos=(float('nan'),) * 3, twist_fresh=True)
+    assert s == HOLD
+    assert np.all(np.isfinite(p)) and np.all(np.isfinite(v))
+
+
+def test_twist_follow_z_is_rate_limited():
+    # Code review finding #2: only `isfinite` was checked, so a FINITE absurd
+    # value (1e308) overflowed ref_z to inf within a few ticks; pos_des[2]=inf
+    # then made the node's S2 carrot compute inf * 0.0 = NaN.
+    cfg = dict(CFG, twist_follow_z=True, twist_max_vz=0.5)
+    r = SetpointResolver(5.0)
+    kw = dict(mode=VELOCITY, cur_pos=np.array([0., 0., 5.0]), cur_yaw=0.0,
+              goal_active=False, goal_stamp=0.0, goal_xyz=None, goal_yaw=None,
+              twist_fresh=True, twist_stamp=1.0, twist_vx=0.0, twist_vy=0.0,
+              twist_wz=0.0, cfg=cfg)
+    r.update(dt=0.0, twist_vz=0.0, **kw)
+    p, *_ = r.update(dt=1.0, twist_vz=1e308, **kw)
+    assert np.isfinite(p[2])
+    assert p[2] == pytest.approx(5.0 + 0.5 * 1.0, abs=1e-9)
+
+
+def test_ref_z_is_banded():
+    cfg = dict(CFG, twist_follow_z=True, twist_max_vz=5.0)
+    r = SetpointResolver(5.0)
+    kw = dict(mode=VELOCITY, cur_pos=np.array([0., 0., 0.5]), cur_yaw=0.0,
+              goal_active=False, goal_stamp=0.0, goal_xyz=None, goal_yaw=None,
+              twist_fresh=True, twist_stamp=1.0, twist_vx=0.0, twist_vy=0.0,
+              twist_wz=0.0, cfg=cfg)
+    for _ in range(20):
+        p, *_ = r.update(dt=0.1, twist_vz=-5.0, **kw)
+    assert p[2] == pytest.approx(MIN_HEIGHT)
+
+    r2 = SetpointResolver(5.0)
+    for _ in range(200):
+        p2, *_ = r2.update(dt=0.1, twist_vz=5.0, **kw)
+    assert p2[2] == pytest.approx(MAX_HEIGHT)

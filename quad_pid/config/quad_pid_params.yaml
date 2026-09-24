@@ -56,6 +56,7 @@ quad_pid_node:
     twist_max_vx: 1.5
     twist_max_vy: 1.5
     twist_max_wz: 0.8
+    twist_max_vz: 1.0
     # >0 → 巡航在此高度；<=0 → 进入速度模式时锁存当前高度
     twist_target_height: -1.0
     # Nav2 的 linear.z 恒为 0，默认不积分（true 只给 3D 规划器用）

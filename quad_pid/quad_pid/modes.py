@@ -21,6 +21,22 @@ POSITION = 'position'
 VELOCITY = 'velocity'
 HOLD = 'hold'
 
+# Integrator hygiene. A suspended process (debugger, scheduler stall) must not
+# advance the setpoint by seconds' worth in one tick.
+MAX_DT = 0.1
+# Altitude band for `twist_follow_z`. A hard band is deliberate: this is a
+# flight controller, and once integration is enabled `ref_z` has no other
+# physical bound.
+MIN_HEIGHT = 0.3
+MAX_HEIGHT = 50.0
+
+
+def clamp_dt(dt, max_dt=MAX_DT):
+    """Clamp a measured control period into [0, max_dt]; NaN -> 0."""
+    if not math.isfinite(dt):
+        return 0.0
+    return max(0.0, min(max_dt, dt))
+
 
 def clamp_twist(vx, vy, wz, vmax_x, vmax_y, wmax):
     """Saturate a body-frame velocity command per axis, sanitising NaN/Inf.
@@ -38,6 +54,11 @@ def clamp_twist(vx, vy, wz, vmax_x, vmax_y, wmax):
         return max(-lim, min(lim, v))
 
     return (_sat_inf(vx, vmax_x), _sat_inf(vy, vmax_y), _sat_inf(wz, wmax))
+
+
+def clamp_z_rate(vz, vmax):
+    """Rate-limit `linear.z`, which clamp_twist's signature does not cover."""
+    return clamp_twist(0.0, 0.0, vz, 0.0, 0.0, vmax)[2]
 
 
 def body_to_world_velocity(vx, vy, yaw):
@@ -117,11 +138,26 @@ class SetpointResolver:
         # on with nothing to consume would fly the drone back to a reference
         # left over from an old session, arbitrarily far away.
         self.freeze = False
+        # Last finite command, returned when odom goes non-finite (see update).
+        self.last_good = None
 
     def update(self, *, mode, dt, cur_pos, cur_yaw,
                goal_active, goal_stamp, goal_xyz, goal_yaw,
                twist_fresh, twist_stamp,
                twist_vx, twist_vy, twist_vz, twist_wz, cfg):
+        # Never consume a corrupt odom sample. Latching a non-finite value is
+        # ABSORBING -- advance_setpoint's `d > leash` test is False for NaN, so
+        # the NaN is rewritten into ref_xy every tick -- and the downstream
+        # accel clamps turn NaN into a FULL-SCALE command (Python's min/max
+        # keep the non-NaN operand, so max(-3, min(3, nan)) == 3), which means
+        # the end-of-pipeline NaN guard never trips. Hold the last good command
+        # and resume as soon as odom is sane again.
+        if not (np.all(np.isfinite(cur_pos)) and math.isfinite(float(cur_yaw))):
+            if self.last_good is None:
+                return (np.zeros(3), 0.0, np.zeros(3), HOLD)
+            return (self.last_good[0].copy(), self.last_good[1],
+                    np.zeros(3), HOLD)
+
         src = select_source(mode, goal_active, goal_stamp, twist_fresh, twist_stamp)
 
         if src == VELOCITY:
@@ -134,19 +170,26 @@ class SetpointResolver:
             self.ref_xy = advance_setpoint(self.ref_xy, (wx, wy), dt,
                                            self.leash, (cur_pos[0], cur_pos[1]))
             self.ref_yaw = advance_yaw(self.ref_yaw, wz, dt)
-            if cfg['twist_follow_z'] and math.isfinite(twist_vz):
-                self.ref_z += twist_vz * dt
+            if cfg['twist_follow_z']:
+                # linear.z is the one field clamp_twist's signature does not
+                # cover, so a FINITE but absurd value (1e308) would overflow
+                # ref_z to inf within a few ticks and from there poison the S2
+                # carrot (inf * 0.0 = NaN). Rate-limit it, then band the result.
+                vz = clamp_z_rate(twist_vz, cfg['twist_max_vz'])
+                self.ref_z = min(max(self.ref_z + vz * dt, MIN_HEIGHT),
+                                 MAX_HEIGHT)
             self.freeze = True
             self.source = VELOCITY
-            return (np.array([self.ref_xy[0], self.ref_xy[1], self.ref_z]),
-                    self.ref_yaw,
-                    np.array([wx, wy, 0.0]), VELOCITY)
+            return self._out(np.array([self.ref_xy[0], self.ref_xy[1],
+                                       self.ref_z]),
+                             self.ref_yaw,
+                             np.array([wx, wy, 0.0]), VELOCITY)
 
         if src == POSITION:
             self.source = POSITION
             self.freeze = False
-            return (np.array(goal_xyz, dtype=float), float(goal_yaw),
-                    np.zeros(3), POSITION)
+            return self._out(np.array(goal_xyz, dtype=float), float(goal_yaw),
+                             np.zeros(3), POSITION)
 
         # HOLD. Braking to the reference left by a velocity session is a smooth
         # stop; holding the current pose is the pre-twist no-command behaviour
@@ -154,10 +197,17 @@ class SetpointResolver:
         # expired, control_mode forcing a source with nothing to consume).
         self.source = HOLD
         if not self.freeze or self.ref_xy is None:
-            return (np.array(cur_pos, dtype=float), float(cur_yaw),
-                    np.zeros(3), HOLD)
-        return (np.array([self.ref_xy[0], self.ref_xy[1], self.ref_z]),
-                self.ref_yaw, np.zeros(3), HOLD)
+            return self._out(np.array(cur_pos, dtype=float), float(cur_yaw),
+                             np.zeros(3), HOLD)
+        return self._out(np.array([self.ref_xy[0], self.ref_xy[1], self.ref_z]),
+                         self.ref_yaw, np.zeros(3), HOLD)
+
+    def _out(self, pos_des, yaw_des, vel_des, src):
+        """Cache the last finite command, then return the update tuple."""
+        pos_des = np.asarray(pos_des, dtype=float)
+        if np.all(np.isfinite(pos_des)) and math.isfinite(float(yaw_des)):
+            self.last_good = (pos_des.copy(), float(yaw_des))
+        return (pos_des, float(yaw_des), vel_des, src)
 
     def _latch(self, cur_pos, cur_yaw, cfg):
         """Bumpless transfer: put the reference on the vehicle's current state."""

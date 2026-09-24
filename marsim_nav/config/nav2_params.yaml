@@ -111,10 +111,10 @@ controller_server:
       wz_std: 0.4
       # Must match quad_pid's twist_max_* in quad_pid/config/quad_pid_nav.yaml,
       # otherwise Nav2 plans assuming speeds the controller clamps away.
-      vx_max: 1.4
+      vx_max: 0.5
       vx_min: -0.35
-      vy_max: 1.4
-      wz_max: 0.8
+      vy_max: 0.5
+      wz_max: 0.6
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1
@@ -218,11 +218,15 @@ local_costmap:
           data_type: "PointCloud2"
           marking: True
           clearing: True
-          # Ground plane below 0.15 would wall the robot in; canopy above 3.0
-          # is above the flight level we care about. This band is what makes a
-          # 3D cloud usable as a 2D costmap for a drone.
-          min_obstacle_height: 0.15
-          max_obstacle_height: 3.0
+          # The band MUST bracket the drone's flight altitude, not the whole
+          # forest. A drone at z=1.0m can legally fly UNDER a branch at z=2.5m,
+          # so a [0.15, 3.0] band invents walls where the drone has clear air --
+          # measured: at the drone's closest approaches there were ZERO points in
+          # z in [0.5, 1.5], yet the costmap treated them as lethal. quad_pid
+          # latches its cruise altitude on entering velocity mode; MARSIM starts
+          # at z=1.0, so this band is 1.0 +/- 0.6 m.
+          min_obstacle_height: 0.4
+          max_obstacle_height: 1.6
           obstacle_max_range: 12.0
           obstacle_min_range: 0.3
           raytrace_max_range: 15.0
@@ -249,8 +253,8 @@ global_costmap:
           data_type: "PointCloud2"
           marking: True
           clearing: True
-          min_obstacle_height: 0.15
-          max_obstacle_height: 3.0
+          min_obstacle_height: 0.4
+          max_obstacle_height: 1.6
           obstacle_max_range: 12.0
           obstacle_min_range: 0.3
           raytrace_max_range: 15.0
@@ -378,8 +382,8 @@ velocity_smoother:
     # Aligned with quad_pid's twist_max_* (1.4/1.4/0.8). The y entries are
     # non-zero and the y accel is non-zero because the Omni model actually uses
     # the lateral axis; the diff-drive defaults (0.0) would forbid strafing.
-    max_velocity: [1.4, 1.4, 0.8]
-    min_velocity: [-1.4, -1.4, -0.8]
+    max_velocity: [0.5, 0.5, 0.6]
+    min_velocity: [-0.5, -0.5, -0.6]
     max_accel: [1.0, 1.0, 1.0]
     max_decel: [-1.0, -1.0, -1.0]
     odom_topic: "odom"

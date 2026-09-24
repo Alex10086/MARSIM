@@ -6,7 +6,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension, MultiArrayLayout
@@ -16,6 +16,7 @@ from quad_pid.geometry import (accel_to_attitude, accel_to_attitude_yaw,
                                yaw_from_quaternion, shortest_angle,
                                limit_horizontal_speed)
 from quad_pid.goal import goal_is_active, sanitize_goal
+from quad_pid.modes import SetpointResolver
 
 
 class QuadPIDNode(Node):
@@ -77,6 +78,19 @@ class QuadPIDNode(Node):
         self.declare_parameter('use_imu', True)
         self.declare_parameter('verbose', False)
 
+        # ── 输入模式（Twist / Nav2）──
+        # control_mode: 'position' 只用 /cmd；'velocity' 只用 /cmd_vel；
+        #               'auto' 取时间戳更新的那个（无 /cmd_vel 时退化为位置模式）
+        self.declare_parameter('control_mode', 'auto')
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('cmd_vel_timeout', 0.5)
+        self.declare_parameter('twist_max_vx', 1.5)
+        self.declare_parameter('twist_max_vy', 1.5)
+        self.declare_parameter('twist_max_wz', 0.8)
+        self.declare_parameter('twist_target_height', -1.0)
+        self.declare_parameter('twist_follow_z', False)
+        self.declare_parameter('publish_setpoint', False)
+
     def _init_state(self):
         """Initialize internal state."""
         self.goal = None
@@ -97,6 +111,14 @@ class QuadPIDNode(Node):
         self._has_odom = False  # track whether we've ever received odom
         self._debug_tick = 0
         self._bad_goal_warned = False  # warn once per rejected goal
+        self.twist = None          # latest Twist command
+        self.twist_stamp = 0.0
+        # Mode arbitration + setpoint integration. Leash mirrors
+        # max_horiz_dist and is re-read every tick (hot reload).
+        self.resolver = SetpointResolver(
+            leash=self.get_parameter('max_horiz_dist').value)
+        self._last_tick = now      # wall clock, for the measured control dt
+        self._last_source = None   # log source transitions once
 
     def _create_subscriptions(self):
         qos = QoSProfile(
@@ -107,6 +129,13 @@ class QuadPIDNode(Node):
         )
         self.goal_sub = self.create_subscription(
             PoseStamped, '/cmd', self._goal_callback, qos)
+        # Nav2 publishes cmd_vel with rclcpp::SystemDefaultsQoS() (RELIABLE).
+        # A BEST_EFFORT subscriber is compatible with a RELIABLE publisher,
+        # whereas a RELIABLE subscriber would silently receive nothing from a
+        # BEST_EFFORT (SensorDataQoS) publisher. Keep BEST_EFFORT.
+        self.twist_sub = self.create_subscription(
+            Twist, self.get_parameter('cmd_vel_topic').value,
+            self._twist_callback, qos)
         self.odom_sub = self.create_subscription(
             Odometry, '/odom', self._odom_callback, qos)
         self.imu_sub = self.create_subscription(
@@ -120,6 +149,11 @@ class QuadPIDNode(Node):
             depth=1,
         )
         self.rpm_pub = self.create_publisher(Float32MultiArray, '/cmd_RPM', qos)
+        # Debug/observability: the setpoint the controller is actually chasing.
+        # Always created so that publish_setpoint can be toggled at runtime
+        # like every other parameter.
+        self.setpoint_pub = self.create_publisher(
+            PoseStamped, '/quad_pid/setpoint', qos)
 
     def _create_timer(self):
         rate = self.get_parameter('control_rate').value
@@ -150,11 +184,29 @@ class QuadPIDNode(Node):
             'max_horiz_speed': p('max_horiz_speed'),
             'max_descend_speed': p('max_descend_speed'),
             'use_imu': p('use_imu'), 'verbose': p('verbose'),
+            'control_mode': p('control_mode'),
+            'cmd_vel_timeout': p('cmd_vel_timeout'),
+            'twist_max_vx': p('twist_max_vx'),
+            'twist_max_vy': p('twist_max_vy'),
+            'twist_max_wz': p('twist_max_wz'),
+            'twist_target_height': p('twist_target_height'),
+            'twist_follow_z': p('twist_follow_z'),
+            'publish_setpoint': p('publish_setpoint'),
         }
 
     def _goal_callback(self, msg: PoseStamped):
         self.goal = msg
         self.goal_stamp = time.time()
+
+    def _twist_callback(self, msg: Twist):
+        """Store only — all maths happens in _control_tick.
+
+        Doing the integration here would make dt depend on the publisher's
+        rate and would put the setpoint state in a second place. The timer is
+        the single writer of the resolver.
+        """
+        self.twist = msg
+        self.twist_stamp = time.time()
 
     def _odom_callback(self, msg: Odometry):
         p = msg.pose.pose.position
@@ -199,7 +251,19 @@ class QuadPIDNode(Node):
     def _control_tick(self):
         """Main control loop: L1→L2→L3→L4 → publish RPM."""
         now = time.time()
+        # Measured dt (clamped), not the nominal 1/control_rate: the setpoint
+        # integrator must advance at the commanded speed even when the timer
+        # jitters, and a suspended process must not advance it by seconds.
+        dt = min(max(now - self._last_tick, 0.0), 0.1)   # Review Focus #8
+        self._last_tick = now
         cfg = self._read_params()
+        self.resolver.leash = cfg['max_horiz_dist']      # hot reload
+
+        # Current yaw is needed early: the resolver rotates the body-frame
+        # Twist command into the world frame with it, and Layer 2 needs it to
+        # build the body-frame attitude setpoint.
+        q = self.state['quat']
+        roll_cur, pitch_cur, yaw_cur = self._quat_to_euler(q[0], q[1], q[2], q[3])
 
         # ── Freshness checks ──
         if not self._has_odom:
@@ -210,38 +274,57 @@ class QuadPIDNode(Node):
         if now - self.state['odom_stamp'] > 0.5:
             return  # Stale odom → don't publish
 
-        if not goal_is_active(has_goal=self.goal is not None,
-                              goal_age=now - self.goal_stamp,
-                              goal_timeout=cfg['goal_timeout'],
-                              latched=cfg['goal_latched']):
-            # No goal (yet) or streaming goal went stale → hold current pose.
-            pos_des = self.state['pos'].copy()
-            yaw_des = yaw_from_quaternion(*self.state['quat'])
-        else:
+        # ── Command-source resolution ──
+        # Position goals keep their original sanitisation semantics: an
+        # unusable goal simply becomes inactive rather than being tracked.
+        goal_ok = goal_is_active(has_goal=self.goal is not None,
+                                 goal_age=now - self.goal_stamp,
+                                 goal_timeout=cfg['goal_timeout'],
+                                 latched=cfg['goal_latched'])
+        goal_xyz = goal_yaw = None
+        if goal_ok:
             g = self.goal.pose.position
             cur = self.state['pos']
             gx, gy, gz, ok = sanitize_goal(g.x, g.y, g.z,
                                            cur[0], cur[1], cur[2],
                                            cfg['max_goal_dist'])
-            q = self.goal.pose.orientation
-            if not ok:
+            if ok:
+                goal_xyz = (gx, gy, gz)
+                qg = self.goal.pose.orientation
+                identity = (abs(qg.x) < 1e-9 and abs(qg.y) < 1e-9
+                            and abs(qg.z) < 1e-9 and abs(qg.w - 1.0) < 1e-9)
+                # Identity orientation means "keep current yaw".
+                goal_yaw = (yaw_cur if identity
+                            else yaw_from_quaternion(qg.x, qg.y, qg.z, qg.w))
+            else:
                 # Unusable goal (horizon click kilometres away, or NaN):
                 # ignore it and hold the current pose.
+                goal_ok = False
                 if not self._bad_goal_warned:
                     self._bad_goal_warned = True
                     self.get_logger().warn(
                         f'Ignoring goal ({g.x:.1f},{g.y:.1f},{g.z:.1f}): '
                         f'farther than {cfg["max_goal_dist"]:.0f}m from vehicle '
                         f'or invalid. Holding position.')
-                pos_des = self.state['pos'].copy()
-                yaw_des = yaw_from_quaternion(*self.state['quat'])
-            else:
-                pos_des = np.array([gx, gy, gz])
-                # If orientation is identity, keep current yaw
-                if abs(q.x) < 1e-9 and abs(q.y) < 1e-9 and abs(q.z) < 1e-9 and abs(q.w - 1.0) < 1e-9:
-                    yaw_des = yaw_from_quaternion(*self.state['quat'])
-                else:
-                    yaw_des = yaw_from_quaternion(q.x, q.y, q.z, q.w)
+
+        twist_fresh = (self.twist is not None
+                       and (now - self.twist_stamp) <= cfg['cmd_vel_timeout'])
+        tw = self.twist if self.twist is not None else Twist()
+
+        pos_des, yaw_des, vel_des, source = self.resolver.update(
+            mode=cfg['control_mode'], dt=dt,
+            cur_pos=self.state['pos'], cur_yaw=yaw_cur,
+            goal_active=goal_ok, goal_stamp=self.goal_stamp,
+            goal_xyz=goal_xyz, goal_yaw=goal_yaw,
+            twist_fresh=twist_fresh, twist_stamp=self.twist_stamp,
+            twist_vx=tw.linear.x, twist_vy=tw.linear.y, twist_vz=tw.linear.z,
+            twist_wz=tw.angular.z, cfg=cfg)
+
+        if source != self._last_source:
+            self.get_logger().info(f'control source -> {source}')
+            self._last_source = source
+        if cfg['publish_setpoint']:
+            self._publish_setpoint(pos_des, yaw_des)
 
         # Safety S2: distance limiting
         delta = pos_des - self.state['pos']
@@ -252,7 +335,10 @@ class QuadPIDNode(Node):
 
         # ── Layer 1: Position error → desired acceleration (PD) ──
         e_pos = pos_des - self.state['pos']
-        e_vel = np.zeros(3) - self.state['vel']  # vel_des = [0,0,0]
+        # Velocity feedforward. In position/hold mode vel_des is exactly zero,
+        # so this is bit-identical to the old `-self.state['vel']`. In velocity
+        # mode it removes the steady-state lag KD/KP*v (~2.8 m at 1.4 m/s).
+        e_vel = vel_des - self.state['vel']
 
         a_des = np.zeros(3)
         a_des[0] = cfg['KP_XY'] * e_pos[0] + cfg['KD_XY'] * e_vel[0]
@@ -261,7 +347,7 @@ class QuadPIDNode(Node):
 
         # Integrator (Z only, default KI_Z=0)
         if cfg['KI_Z'] > 1e-9:
-            self.integral_z += e_pos[2] * (1.0 / self.get_parameter('control_rate').value)
+            self.integral_z += e_pos[2] * dt
             self.integral_z = max(-2.0, min(2.0, self.integral_z))
             a_des[2] += cfg['KI_Z'] * self.integral_z
 
@@ -294,8 +380,6 @@ class QuadPIDNode(Node):
         # rotated by -yaw — a non-conservative field that makes the drone orbit
         # (stable limit cycle) whenever yaw != 0 (e.g. an RViz drag that sets a
         # non-zero goal yaw).
-        q = self.state['quat']
-        roll_cur, pitch_cur, yaw_cur = self._quat_to_euler(q[0], q[1], q[2], q[3])
         roll_des, pitch_des = accel_to_attitude_yaw(
             a_des[0], a_des[1], a_des[2], yaw_cur)
 
@@ -360,6 +444,22 @@ class QuadPIDNode(Node):
                 f'RPM=[{rpm[0]:.0f},{rpm[1]:.0f},{rpm[2]:.0f},{rpm[3]:.0f}] '
                 f'tilt=({math.degrees(roll_cur):.1f},{math.degrees(pitch_cur):.1f})'
             )
+
+    def _publish_setpoint(self, pos_des, yaw_des):
+        """Publish the resolved setpoint so it can be watched in RViz.
+
+        Invaluable when Nav2 misbehaves: it separates "the command was wrong"
+        from "the controller failed to track the command".
+        """
+        m = PoseStamped()
+        m.header.frame_id = 'world'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.pose.position.x = float(pos_des[0])
+        m.pose.position.y = float(pos_des[1])
+        m.pose.position.z = float(pos_des[2])
+        m.pose.orientation.z = math.sin(yaw_des / 2.0)
+        m.pose.orientation.w = math.cos(yaw_des / 2.0)
+        self.setpoint_pub.publish(m)
 
     def _publish_rpm(self, rpm: np.ndarray):
         msg = Float32MultiArray()

@@ -47,3 +47,17 @@ quad_pid_node:
     # ── 功能开关 ──
     use_imu: true
     verbose: true
+    # ── 输入模式（Twist / Nav2）──
+    # position: 只用 /cmd；velocity: 只用 /cmd_vel；auto: 取时间戳更新的那个
+    # 无 /cmd_vel 发布者时 auto 退化为纯位置模式（与加入 twist 之前一致）
+    control_mode: "auto"
+    cmd_vel_topic: "/cmd_vel"
+    cmd_vel_timeout: 0.5
+    twist_max_vx: 1.5
+    twist_max_vy: 1.5
+    twist_max_wz: 0.8
+    # >0 → 巡航在此高度；<=0 → 进入速度模式时锁存当前高度
+    twist_target_height: -1.0
+    # Nav2 的 linear.z 恒为 0，默认不积分（true 只给 3D 规划器用）
+    twist_follow_z: false
+    publish_setpoint: false

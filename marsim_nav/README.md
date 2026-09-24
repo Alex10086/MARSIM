@@ -210,9 +210,10 @@ OctoMap/ESDF）。可复用的是 MARSIM 仿真、本包的 TF 树，以及 `qua
 | 导航栈没起来 | `ros2 lifecycle get /{bt_navigator,controller_server,planner_server,map_server}` 应全 `active` |
 | 无人机不动，Nav2 日志正常 | `ros2 topic info -v /cmd_vel_nav` 的 Subscription 里有没有 `quad_pid_node` |
 | 代价图没有障碍物 | `odom→world` TF 在不在（`ros2 run tf2_ros tf2_echo odom world`）；`/cloud` 有没有数据 |
-| 规划器报 `Start occupied` | 无人机已冲进障碍格（多半是速度过快，见 §8）；或目标点落在障碍里 |
-| 无人机贴障碍 | 检查高度带是否与飞行高度一致（见 §7） |
-| 改了参数没效果 | **`colcon build` 了吗**（§1） |
+| 规划器报 `Start occupied` | 无人机已进入自身 `inscribed_radius`（= `robot_radius`）内。**先量跟踪偏差，别先降速**，见 §11；或目标点落在障碍里 |
+| 无人机贴障碍 | 检查高度带是否与飞行高度一致（见 §7）；再量跟踪偏差（§11） |
+| 无人机以极低速蠕动（~0.02 m/s）最后卡住 | 查 `/cmd_vel_nav` 的**指令速度**：若指令本身就只有 0.02，是 MPPI 的问题；若指令正常而实际为 0，是 `quad_pid` 的问题（§11 的探针一次给出两者） |
+| 改了参数没效果 | **`colcon build` 了吗**（§1）。另注意：`SmacPlanner2D` 的 `cost_penalty` 与两处 `inflation_radius` 对本图的**计划间距实测完全无影响**（见 §12） |
 
 ### 控制器侧隔离（不依赖 Nav2）
 
@@ -223,6 +224,55 @@ ros2 launch quad_pid twist_test.launch.py pattern:=forward vx:=1.0 duration:=5
 ros2 launch quad_pid twist_test.launch.py pattern:=forward vx:=1.0 yaw:=-54   # 绕圈 bug 回归
 ros2 launch quad_pid twist_test.launch.py pattern:=strafe vy:=1.0
 ```
+
+### §11 量跟踪偏差（排查导航问题的第一步）
+
+**先测量，再调参。** 本项目的 `Start occupied` 死锁根因不在 Nav2，而在跟踪偏差；
+只调 Nav2 参数永远修不好它。同时记录 `/odom` 与 `/cmd_vel_nav`，并把横向偏差相对
+**当刻**计划计算：
+
+```bash
+# 修改：launch 全栈后运行（脚本同时打印 指令速度 / 实际速度 / 实时横向偏差）
+python3 /tmp/trace.py 44.03 -10.01 200
+```
+
+判读：
+
+| 现象 | 含义 |
+|---|---|
+| 指令速度低（如 0.54 而 `vx_max` 是 0.8） | MPPI 的代价权衡，不是配置错。3 个候选旋钮实测零效果，见 §12 |
+| 实际 = 指令的 ~84% | `quad_pid` 能达到指令速度，瓶颈在 Nav2 |
+| 横向偏差中位 ~0.30m | **位置环权限不足**：`KP_XY × max_horiz_dist` 太小，见下 |
+
+**核心关系（Twist 模式）**：位置误差被 `max_horiz_dist` 钳住，所以位置环的修正权限上限
+就是 `KP_XY × max_horiz_dist`。默认 `KP_XY=0.5` 配 `0.3m` 的 leash 只有 **0.15 m/s²**，
+无人机跟不上速度指令，稳定偏离路径 0.30m；而全局计划最小间距仅 0.78m，
+`0.78 − 0.56(最大偏差) = 0.22m < robot_radius 0.25m` → 报 `Start occupied` →
+`WouldAPlannerRecoveryHelp` 判定清代价图无用 → **立即 Goal failed，永久卡死不可自愈**。
+
+修法（只改配置，不动算法）：`KP_XY 0.5 → 4.0`、`KD_XY 1.0 → 3.0`
+（ωn 0.7→2.0 rad/s，与内环 8 rad/s 保持 4 倍分离）。实测横向偏差
+**中位 0.30m → 0.02m、>0.25m 占比 53% → 0.6%**，回归轨迹违规点 0。
+
+> 教训：**别用首条 `/plan` 与整段轨迹比偏差**。Nav2 每周期重规划，拿过期计划比会严重
+> 高估（曾据此误判为「偏离 0.7~1.0m」）。要用「轨迹到障碍的绝对间距」或「当刻计划」。
+
+### §12 已实测无效的旋钮（别重复试）
+
+以下改动对**计划间距**或**指令速度**实测**完全无影响**（计划逐点相同）——
+本图用的是静态森林，规划器行为由几何决定：
+
+| 改动 | 结果 |
+|---|---|
+| `GridBased.cost_penalty` 3.0 / 10.0 / 30.0 | 计划**逐点相同** |
+| 全局 `inflation_radius` 1.0 / 1.5 / 2.0 | 计划**逐点相同**（min 间距 0.78m 不变） |
+| `CostCritic.cost_weight` 3.81 → 2.5 | 指令速度不变（0.54/0.56/0.62） |
+| `PathAlignCritic.cost_weight` 14 → 6 | 指令速度不变 |
+| `vx_max` 0.8 → 1.0 | 指令速度不变（说明 MPPI 的代价最优速度本就约 0.55） |
+
+计划的最小间距 ≈ **森林几何的副产物**（本图约 0.78m，而邻域 1.5m 内可达 1.7~2.6m）。
+**提高计划间距只能靠加大 `robot_radius`（= `inscribed_radius`）**，但那会同步抬高
+`Start occupied` 的死锁阈值，**净效果更糟**。所以正确方向是压跟踪偏差，不是推远计划。
 
 ### ⚠️ 进程卫生（重要）
 
@@ -236,6 +286,10 @@ pkill -9 -f rviz2; pkill -9 -f opengl_render_node
 pkill -9 -f "nav2_"; pkill -9 -f quad_pid_node
 pkill -9 -f marsim_tf_broadcaster
 ```
+
+> **反面教材**：`pkill -f sweep2.sh` 会匹配到**调用它的 shell 自身**（自己的命令行里就含这串），
+> 当场自杀。要么写成脚本文件用 `$0` 自排除，要么用括号技巧 `pkill -f '[s]weep2'`。
+> 复核进程数同理：`pgrep -cf '[r]viz2'`，否则会自匹配。
 
 > 教训：排查中曾累积 8 个 `ros2 launch` 父进程、4 个 RViz、5 个 OpenGL 渲染器，**负载 24+**，
 > 一度把服务超时误判为 Fast-DDS 共享内存问题（**错误结论**）。清干净后不带任何环境变量

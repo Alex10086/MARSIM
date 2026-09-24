@@ -214,7 +214,7 @@ local_costmap:
         enabled: True
         observation_sources: scan3d
         scan3d:
-          topic: /cloud
+          topic: /cloud_lidar
           data_type: "PointCloud2"
           marking: True
           clearing: True
@@ -249,7 +249,7 @@ global_costmap:
         enabled: True
         observation_sources: scan3d
         scan3d:
-          topic: /cloud
+          topic: /cloud_lidar
           data_type: "PointCloud2"
           marking: True
           clearing: True

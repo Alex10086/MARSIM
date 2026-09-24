@@ -17,6 +17,7 @@ def generate_launch_description():
     params = LaunchConfiguration('params_file')
     map_yaml = LaunchConfiguration('map')
     autostart = LaunchConfiguration('autostart')
+    lidar_offset_z = LaunchConfiguration('lidar_offset_z')
 
     # navigation_launch.py starts controller_server, smoother_server,
     # planner_server, route_server, behavior_server, bt_navigator,
@@ -40,6 +41,21 @@ def generate_launch_description():
         }.items(),
     )
 
+    # MARSIM stamps /cloud with frame_id 'world' and world coordinates. Nav2's
+    # obstacle layer treats a cloud's FRAME ORIGIN as the sensor origin and
+    # raytrace-clears from there, so a world-frame cloud makes every clearing
+    # ray start at (0, 0) instead of at the vehicle: nothing near the vehicle is
+    # ever cleared (thousands of "Sensor origin at (0.00, 0.00) is out of map
+    # bounds" warnings) and the local costmap drifts out of step with reality.
+    # This republishes the same points in lidar_link so marking AND clearing are
+    # both correct. lidar_offset_z must match tf_broadcaster's.
+    cloud_reframe = Node(
+        package='marsim_nav', executable='cloud_reframe_node',
+        name='marsim_cloud_reframe', output='screen',
+        parameters=[{'cloud_in': '/cloud', 'cloud_out': '/cloud_lidar',
+                     'lidar_offset_z': lidar_offset_z}],
+    )
+
     map_server = Node(
         package='nav2_map_server', executable='map_server',
         name='map_server', output='screen',
@@ -60,10 +76,11 @@ def generate_launch_description():
             'map',
             default_value=os.path.join(pkg, 'maps', 'forest.yaml')),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('lidar_offset_z', default_value='0.1'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg, 'launch', 'tf.launch.py'))),
-        map_server, lifecycle_map,
+        cloud_reframe, map_server, lifecycle_map,
         # Sequence, do not overlap: let map_server reach ACTIVE before the nav
         # stack's own lifecycle manager starts transitioning 10 nodes. Nav2's
         # lifecycle manager calls change_state via

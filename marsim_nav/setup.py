@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', glob('config/*')),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/maps', glob('maps/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +27,7 @@ setup(
             'tf_broadcaster = marsim_nav.tf_broadcaster:main',
             'occupancy_grid_node = marsim_nav.occupancy_grid_node:main',
             'cloud_reframe_node = marsim_nav.cloud_reframe_node:main',
+            'nav_diag = marsim_nav.nav_diag:main',
         ],
     },
 )

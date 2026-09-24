@@ -124,7 +124,7 @@ controller_server:
       # uses CostCritic (already the Jazzy default); the pre-Jazzy name
       # ObstaclesCritic is silently ignored here, leaving the controller blind.
       motion_model: "Omni"
-      visualize: false
+      visualize: true
       regenerate_noises: true
       TrajectoryVisualizer:
         trajectory_step: 5

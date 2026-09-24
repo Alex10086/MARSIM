@@ -237,7 +237,7 @@ local_costmap:
           # COMPLETELY EMPTY: measured 致命(254)=0, 自由(0)=10000/10000, i.e. no
           # obstacles at all, where the world-frame cloud gave 631-749 occupied
           # cells. Marking is what matters; the warning was cosmetic.
-          topic: /cloud
+          topic: /cloud_lidar
           data_type: "PointCloud2"
           marking: True
           clearing: True
@@ -248,8 +248,18 @@ local_costmap:
           # z in [0.5, 1.5], yet the costmap treated them as lethal. quad_pid
           # latches its cruise altitude on entering velocity mode; MARSIM starts
           # at z=1.0, so this band is 1.0 +/- 0.6 m.
-          min_obstacle_height: 0.4
-          max_obstacle_height: 1.6
+          # HEIGHT BAND IS IN THE CLOUD'S FRAME. The cloud is now reframed into
+          # lidar_link, so these are heights ABOVE THE LIDAR, not above the
+          # ground: with the vehicle cruising at z=1.0 m and the lidar 0.1 m
+          # above that, a world band of [0.4, 1.6] m becomes
+          #     [0.4 - 1.1, 1.6 - 1.1] = [-0.7, +0.5] m
+          # Leaving the old 0.4/1.6 here is what made the costmap COMPLETELY
+          # EMPTY (measured 自由=10000/10000): in the lidar frame 0.4..1.6 m
+          # means 1.5..2.7 m above the ground, so every trunk was filtered out.
+          # Widening the band to -5/5 restored marking (2500 cells), which is
+          # what proved the band was the cause.
+          min_obstacle_height: -0.7
+          max_obstacle_height: 0.5
           obstacle_max_range: 12.0
           obstacle_min_range: 0.3
           raytrace_max_range: 15.0

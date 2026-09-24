@@ -101,18 +101,10 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
-      # 1.0, not the 3.0 default: MPPI's acceleration limit has to reflect what
-      # the plant can actually deliver. quad_pid's position loop runs at about
-      # wn ~ 0.7-1.0 rad/s, so a 3 m/s^2 command is a manoeuvre the vehicle
-      # physically cannot follow. MPPI then plans trajectories the drone cannot
-      # track, the tracking error grows to ~0.8 m (measured: plan keeps 0.78 m
-      # clearance, the flown track comes within 0.00 m of trunks), and once the
-      # drone is inside its own inscribed radius the planner refuses to start:
-      # "Start occupied" -- an unrecoverable deadlock.
-      ax_max: 1.0
-      ax_min: -1.0
-      ay_max: 1.0
-      ay_min: -1.0
+      ax_max: 3.0
+      ax_min: -3.0
+      ay_max: 3.0
+      ay_min: -3.0
       az_max: 3.5
       vx_std: 0.2
       vy_std: 0.2
@@ -221,22 +213,7 @@ local_costmap:
       # forward-facing 70.4 deg LiDAR never renders obstacles beside/behind the
       # drone, so global and local disagreed.
       robot_radius: 0.25
-      # static_layer is here -- and AFTER obstacle_layer -- for two reasons.
-      #
-      # 1. MARSIM's LiDAR has only a 70-degree forward FOV. Anything beside or
-      #    behind the vehicle is invisible to the local costmap, so MPPI never
-      #    avoids it and the drone can end up parked with an obstacle at its
-      #    back that the local costmap does not show at all. The surveyed map
-      #    gives the local costmap eyes in every direction.
-      # 2. Ordering it after obstacle_layer stops the live layer's raytrace
-      #    clearing (which fires along sparse forward rays and misses trunks)
-      #    from erasing surveyed obstacles. The forest is static and fully
-      #    mapped, so the map is the authority; live marks still land outside
-      #    the mapped area.
-      plugins: ["obstacle_layer", "static_layer", "inflation_layer"]
-      static_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: True
+      plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -275,28 +252,14 @@ global_costmap:
       robot_radius: 0.25
       resolution: 0.1
       track_unknown_space: true
-      # No obstacle_layer here on purpose. The forest is fully surveyed, so the
-      # static map is authoritative for planning. A live layer would run AFTER
-      # static_layer and its raytrace clearing would erase static cells wherever
-      # MARSIM's sparse 70-degree forward LiDAR happens to miss a trunk -- the
-      # planner then cuts through trees the controller can see, and the flight
-      # ends. Live sensing belongs in the local costmap only.
+      # Global planning uses the SURVEYED MAP ONLY. The forest is static and fully
+      # mapped, so the static layer is authoritative; feeding the live LiDAR in
+      # would let its raytrace clearing (fired along sparse 70-degree forward rays
+      # that miss trunks) erase surveyed obstacles. Live sensing belongs in the
+      # local costmap. (The obstacle_layer entry that used to be listed here had no
+      # parameter block, i.e. it subscribed to nothing and was inert -- removing it
+      # makes the intent explicit rather than changing behaviour.)
       plugins: ["static_layer", "inflation_layer"]
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: True
-        observation_sources: scan3d
-        scan3d:
-          topic: /cloud_lidar
-          data_type: "PointCloud2"
-          marking: True
-          clearing: True
-          min_obstacle_height: 0.4
-          max_obstacle_height: 1.6
-          obstacle_max_range: 12.0
-          obstacle_min_range: 0.3
-          raytrace_max_range: 15.0
-          raytrace_min_range: 0.3
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True

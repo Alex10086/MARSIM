@@ -48,7 +48,7 @@ quad_pid_node:
     # 全在跟踪。0.3m < 0.98m 的计划间距，留出安全裕度。
     # 注意 leash 只限制【修正量】；速度前馈仍然让无人机按指令速度飞，所以缩短
     # leash 不会显著降速。
-    max_horiz_dist: 0.4
+    max_horiz_dist: 0.3
 
     # Nav2 做 2D 导航，linear.z 恒为 0；高度由 quad_pid 自己锁存并保持。
     twist_target_height: -1.0
@@ -63,3 +63,18 @@ quad_pid_node:
     publish_setpoint: true
 
     verbose: true
+
+    # ── 位置环增益（Nav2 档专用）──────────────────────────────────
+    # 默认 KP_XY=0.5, KD_XY=1.0 对应 ωn ≈ 0.7~1.0 rad/s（见 README 增益表）。
+    # 在 Nav2 的 Twist 模式下，位置误差被 max_horiz_dist 钳住，所以位置环的
+    # 修正权限上限就是 KP_XY × max_horiz_dist：
+    #     KP_XY=0.5, leash=0.3  ->  最大修正加速度仅 0.15 m/s^2
+    # 实测（trace 探针，44m 长距离）：横向偏差中位 0.30m（= leash，说明设定点常年
+    # 顶在钳位上）、实际速度只有指令的 84%。偏差 0.30m 加最大 0.56m，而全局计划
+    # 的最小间距只有 0.78m，于是 0.78-0.56=0.22m < robot_radius 0.25m -> 规划器报
+    # "Start occupied" 且不可自愈 -> 永久卡死。
+    #
+    # KP_XY=4.0, KD_XY=3.0 -> ωn = 2.0 rad/s, ζ = 0.75，修正权限 4.0×0.3 = 1.2 m/s^2。
+    # 与内环 ωn ≈ 8 rad/s 保持 4 倍分离，避免级联失稳。
+    KP_XY: 4.0
+    KD_XY: 3.0

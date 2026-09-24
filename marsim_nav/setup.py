@@ -29,6 +29,7 @@ setup(
             'cloud_reframe_node = marsim_nav.cloud_reframe_node:main',
             'nav_diag = marsim_nav.nav_diag:main',
             'nav_live = marsim_nav.live_state:main',
+            'nav_occupancy = marsim_nav.occ_probe:main',
         ],
     },
 )

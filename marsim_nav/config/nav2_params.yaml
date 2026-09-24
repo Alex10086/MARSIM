@@ -101,19 +101,27 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
-      ax_max: 3.0
-      ax_min: -3.0
-      ay_max: 3.0
-      ay_min: -3.0
+      # 1.0, not the 3.0 default: MPPI's acceleration limit has to reflect what
+      # the plant can actually deliver. quad_pid's position loop runs at about
+      # wn ~ 0.7-1.0 rad/s, so a 3 m/s^2 command is a manoeuvre the vehicle
+      # physically cannot follow. MPPI then plans trajectories the drone cannot
+      # track, the tracking error grows to ~0.8 m (measured: plan keeps 0.78 m
+      # clearance, the flown track comes within 0.00 m of trunks), and once the
+      # drone is inside its own inscribed radius the planner refuses to start:
+      # "Start occupied" -- an unrecoverable deadlock.
+      ax_max: 1.0
+      ax_min: -1.0
+      ay_max: 1.0
+      ay_min: -1.0
       az_max: 3.5
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
       # Must match quad_pid's twist_max_* in quad_pid/config/quad_pid_nav.yaml,
       # otherwise Nav2 plans assuming speeds the controller clamps away.
-      vx_max: 0.5
-      vx_min: -0.35
-      vy_max: 0.5
+      vx_max: 0.8
+      vx_min: -0.5
+      vy_max: 0.8
       wz_max: 0.6
       iteration_count: 1
       prune_distance: 1.7
@@ -203,8 +211,32 @@ local_costmap:
       width: 10
       height: 10
       resolution: 0.1
-      robot_radius: 0.35
-      plugins: ["obstacle_layer", "inflation_layer"]
+      # 0.25, NOT 0.35: the airframe's arm_length is 0.22 m, so 0.35 was
+      # 40-60% oversized. robot_radius IS the inscribed radius, i.e. the lethal
+      # zone around every obstacle. At 0.35 the drone deadlocked whenever it
+      # passed within 0.35 m of a STATIC-map obstacle: its own cell became
+      # lethal in the global costmap, the planner refused with "Start occupied"
+      # (unrecoverable -- it cannot plan from an occupied start), and the run
+      # ended permanently. The local costmap showed free because MARSIM's
+      # forward-facing 70.4 deg LiDAR never renders obstacles beside/behind the
+      # drone, so global and local disagreed.
+      robot_radius: 0.25
+      # static_layer is here -- and AFTER obstacle_layer -- for two reasons.
+      #
+      # 1. MARSIM's LiDAR has only a 70-degree forward FOV. Anything beside or
+      #    behind the vehicle is invisible to the local costmap, so MPPI never
+      #    avoids it and the drone can end up parked with an obstacle at its
+      #    back that the local costmap does not show at all. The surveyed map
+      #    gives the local costmap eyes in every direction.
+      # 2. Ordering it after obstacle_layer stops the live layer's raytrace
+      #    clearing (which fires along sparse forward rays and misses trunks)
+      #    from erasing surveyed obstacles. The forest is static and fully
+      #    mapped, so the map is the authority; live marks still land outside
+      #    the mapped area.
+      plugins: ["obstacle_layer", "static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -240,10 +272,16 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      robot_radius: 0.35
+      robot_radius: 0.25
       resolution: 0.1
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # No obstacle_layer here on purpose. The forest is fully surveyed, so the
+      # static map is authoritative for planning. A live layer would run AFTER
+      # static_layer and its raytrace clearing would erase static cells wherever
+      # MARSIM's sparse 70-degree forward LiDAR happens to miss a trunk -- the
+      # planner then cuts through trees the controller can see, and the flight
+      # ends. Live sensing belongs in the local costmap only.
+      plugins: ["static_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -302,6 +340,13 @@ planner_server:
       max_on_approach_iterations: 1000
       max_planning_time: 5.0
       use_final_approach_orientation: false
+      # cost_penalty MUST be > 1.0 or SmacPlanner2D ignores the inflation
+      # gradient entirely and returns the shortest path that merely avoids
+      # LETHAL cells -- i.e. one that grazes obstacles. That is what left the
+      # global plan with only ~0.98 m of clearance, so a controller lag of the
+      # same order put the drone inside a tree (measured 0.00 m) and the planner
+      # then refused to start: "Start occupied" -- an unrecoverable deadlock.
+      cost_penalty: 3.0
 
 smoother_server:
   ros__parameters:
@@ -382,8 +427,8 @@ velocity_smoother:
     # Aligned with quad_pid's twist_max_* (1.4/1.4/0.8). The y entries are
     # non-zero and the y accel is non-zero because the Omni model actually uses
     # the lateral axis; the diff-drive defaults (0.0) would forbid strafing.
-    max_velocity: [0.5, 0.5, 0.6]
-    min_velocity: [-0.5, -0.5, -0.6]
+    max_velocity: [0.8, 0.8, 0.6]
+    min_velocity: [-0.8, -0.8, -0.6]
     max_accel: [1.0, 1.0, 1.0]
     max_decel: [-1.0, -1.0, -1.0]
     odom_topic: "odom"

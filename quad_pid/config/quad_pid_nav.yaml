@@ -30,17 +30,25 @@ quad_pid_node:
     # 两者相等时，达到速度不会超过 Nav2 规划所假设的 vx_max。
     # 代价：斜向指令合成 √2×1.4 ≈ 1.98 会被压到 1.4，斜向吞吐降低。若要完整
     # 斜向吞吐，把 max_horiz_speed 提到 √2×vx_max 并接受约 21% 的瞬时超调。
-    twist_max_vx: 0.5
-    twist_max_vy: 0.5
+    twist_max_vx: 0.8
+    twist_max_vy: 0.8
     twist_max_wz: 0.6
     twist_max_vz: 1.0
-    max_horiz_speed: 0.5
+    max_horiz_speed: 0.8
 
     # max_horiz_dist 在 Twist 模式下同时是【设定点牵引绳(leash)】和 S2 胡萝卜钳位。
-    # 默认 5.0m 在密林里太长：参考点可以跑到无人机前方 5m，位置 PD 于是猛推着
-    # 无人机切内弯，实测贴到障碍 0.10m（< robot_radius 0.35）并触发 ABORT。
-    # 收到 1.0m 让设定点紧贴机体，从而贴着全局路径飞。
-    max_horiz_dist: 1.0
+    # 这个参数就是【跟踪误差的硬上限】：advance_setpoint() 把设定点钳到距【实际
+    # 位置】leash 米内，所以位置环看到的误差永远 <= leash。它同时决定了过弯能切
+    # 多深。
+    #
+    # 实测标定（都在密林里跑长距离目标）：
+    #   leash 5.0m -> 切内弯，贴到障碍 0.10m -> ABORT
+    #   leash 1.0m -> 仍有 0.38m 中位横向偏差、最大 1.34m，贴到障碍 0.00m -> ABORT
+    # 全局计划本身是好的（442 点里 0 点落在障碍上，最小间距 0.98m），所以问题
+    # 全在跟踪。0.3m < 0.98m 的计划间距，留出安全裕度。
+    # 注意 leash 只限制【修正量】；速度前馈仍然让无人机按指令速度飞，所以缩短
+    # leash 不会显著降速。
+    max_horiz_dist: 0.4
 
     # Nav2 做 2D 导航，linear.z 恒为 0；高度由 quad_pid 自己锁存并保持。
     twist_target_height: -1.0

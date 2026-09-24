@@ -7,6 +7,7 @@ import os
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
@@ -61,11 +62,15 @@ def main(args=None):
     try:
         while rclpy.ok() and not node._done:
             rclpy.spin_once(node, timeout_sec=0.5)
-    except KeyboardInterrupt:
+    # Same shutdown-path defect as tf_broadcaster: SIGINT arrives as
+    # ExternalShutdownException, and an unguarded rclpy.shutdown() then raises
+    # RCLError on the already-shut context (exit code 1).
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

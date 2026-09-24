@@ -11,6 +11,7 @@ consume `/cloud`, which MARSIM stamps `world`. Without it the costmap silently
 never marks an obstacle.
 """
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
@@ -73,11 +74,17 @@ def main(args=None):
     node = TfBroadcaster()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    # SIGINT makes rclpy.spin raise ExternalShutdownException, not
+    # KeyboardInterrupt. Catching only the latter leaves the exception
+    # unhandled and, worse, the finally block then calls rclpy.shutdown() on an
+    # already-shut context, raising RCLError and exiting 1 -- which launch
+    # reports as "process has died", burying the real cause.
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

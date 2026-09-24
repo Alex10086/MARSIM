@@ -28,6 +28,7 @@ setup(
             'occupancy_grid_node = marsim_nav.occupancy_grid_node:main',
             'cloud_reframe_node = marsim_nav.cloud_reframe_node:main',
             'nav_diag = marsim_nav.nav_diag:main',
+            'nav_live = marsim_nav.live_state:main',
         ],
     },
 )

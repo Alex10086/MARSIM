@@ -48,6 +48,38 @@ def emit(line):
     print(line, flush=True)
 
 
+def along_plan(plan, pos, dists):
+    """Points on `plan` at given arc-length offsets AHEAD of `pos`.
+
+    The cost at the vehicle itself says nothing about why MPPI slows down: MPPI
+    scores whole trajectories over a ~2.8 s horizon, so what matters is the cost
+    it sees in FRONT of the vehicle. Sampling ALONG THE PLAN (not a straight
+    line) is what makes the measurement comparable to what the controller is
+    actually trying to follow.
+    """
+    P = np.asarray(plan, dtype=float)
+    if len(P) < 2:
+        return [None] * len(dists)
+    seg = np.maximum(np.hypot(np.diff(P[:, 0]), np.diff(P[:, 1])), 1e-9)
+    s = np.concatenate([[0.0], np.cumsum(seg)])
+    a, b = P[:-1], P[1:]
+    ab = b - a
+    L2 = (ab ** 2).sum(1)
+    t = np.clip(((np.asarray(pos) - a) * ab).sum(1) / np.maximum(L2, 1e-12), 0, 1)
+    proj = a + t[:, None] * ab
+    i = int(np.argmin(np.hypot(pos[0] - proj[:, 0], pos[1] - proj[:, 1])))
+    s0 = s[i] + t[i] * seg[i]
+    out = []
+    for d in dists:
+        sd = s0 + d
+        if sd >= s[-1]:
+            out.append(None)
+            continue
+        j = max(0, min(int(np.searchsorted(s, sd) - 1), len(P) - 2))
+        out.append(P[j] + ((sd - s[j]) / seg[j]) * (P[j + 1] - P[j]))
+    return out
+
+
 class Live(Node):
     def __init__(self):
         super().__init__('live_state')
@@ -58,6 +90,7 @@ class Live(Node):
         self.status = None
         self.grid = None
         self.plan_n = 0
+        self.plan = None
         self.create_subscription(Odometry, '/odom', self._od, 50)
         self.create_subscription(Twist, '/cmd_vel_nav', self._cv, 50)
         self.create_subscription(OccupancyGrid, '/local_costmap/costmap',
@@ -83,21 +116,37 @@ class Live(Node):
 
     def _plan(self, m):
         self.plan_n += 1
+        if len(m.poses) > 1:
+            self.plan = np.array([[p.pose.position.x, p.pose.position.y]
+                                  for p in m.poses])
 
     def _grid(self, m):
         self.grid = m
 
-    def cost_here(self):
+    def cost_at(self, x, y):
         g = self.grid
-        if g is None or self.pos is None:
+        if g is None or x is None:
             return float('nan')
-        c = int((self.pos[0] - g.info.origin.position.x) / g.info.resolution)
-        r = g.info.height - 1 - int((self.pos[1] - g.info.origin.position.y)
+        c = int((x - g.info.origin.position.x) / g.info.resolution)
+        r = g.info.height - 1 - int((y - g.info.origin.position.y)
                                     / g.info.resolution)
         if not (0 <= r < g.info.height and 0 <= c < g.info.width):
             return float('nan')
+        # OccupancyGrid.data is int8, and the costmap PUBLISHER writes
+        # LETHAL_OBSTACLE (254) as 100 and INSCRIBED (253) as 99 -- so on these
+        # topics 100 means blocked, and counting ==254 always yields zero.
         return float(np.frombuffer(g.data, dtype=np.int8).reshape(
             g.info.height, g.info.width)[r, c] & 0xFF)
+
+    def cost_here(self):
+        return self.cost_at(*(self.pos if self.pos else (None, None)))
+
+    def ahead_costs(self, dists=(1.0, 2.0, 3.0, 5.0)):
+        """Costmap cost at 1/2/3/5 m ahead ALONG THE PLAN."""
+        if self.plan is None or self.pos is None:
+            return [float('nan')] * len(dists)
+        pts = along_plan(self.plan, self.pos, dists)
+        return [self.cost_at(*p) if p is not None else float('nan') for p in pts]
 
 
 def main():
@@ -129,8 +178,9 @@ def main():
         return 1
 
     emit(f'目标 ({gx}, {gy}) 已接受，最多记录 {secs:.0f}s（随时 Ctrl-C）')
-    emit(f'{"t":>6} {"status":>10} {"dist":>6} {"yaw°":>7} {"|cmd|":>6} '
-         f'{"wz":>7} {"hz":>5} {"cost":>5} {"plans":>5}')
+    emit('cost 列 = 机体处 / 沿当前计划前方 1m / 2m / 3m / 5m')
+    emit(f'{"t":>6} {"status":>10} {"dist":>6} {"|cmd|":>6} {"wz":>7} '
+         f'{"@0":>5} {"+1m":>5} {"+2m":>5} {"+3m":>5} {"+5m":>5}')
     res = h.get_result_async()
     t0 = time.time()
     nxt = t0
@@ -142,12 +192,11 @@ def main():
                 nxt = now + 1.0
                 d = (math.hypot(n.pos[0] - gx, n.pos[1] - gy)
                      if n.pos else float('nan'))
+                ch, c1, c2, c3, c5 = n.cost_here(), *n.ahead_costs()
                 emit(f'{now - t0:>6.1f} {STATUS.get(n.status, "?"):>10} '
                      f'{d:>6.2f} '
-                     f'{(math.degrees(n.yaw) if n.yaw is not None else float("nan")):>7.1f} '
                      f'{math.hypot(n.cmd[0], n.cmd[1]):>6.2f} {n.cmd[2]:>7.2f} '
-                     f'{n.cmd_n / max(now - t0, 1e-6):>5.1f} '
-                     f'{n.cost_here():>5.0f} {n.plan_n:>5d}')
+                     f'{ch:>5.0f} {c1:>5.0f} {c2:>5.0f} {c3:>5.0f} {c5:>5.0f}')
             if res.done():
                 emit(f'*** 动作在 {time.time() - t0:.1f}s 结束：'
                      f'{STATUS.get(res.result().status, "?")} ***')

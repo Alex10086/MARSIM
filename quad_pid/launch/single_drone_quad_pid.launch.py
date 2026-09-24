@@ -18,6 +18,17 @@ def generate_launch_description():
     init_z_arg = DeclareLaunchArgument('init_z_', default_value='1.0')
     init_yaw_arg = DeclareLaunchArgument('init_yaw', default_value='0.0')
     odom_topic_arg = DeclareLaunchArgument('odom_topic', default_value='odom')
+    # Optional: which RViz config to load. Defaults to MARSIM's
+    # traj_simple.rviz, which has NO Nav2 Goal tool (only the default
+    # 2D Goal Pose, whose /goal_pose topic Nav2 does not subscribe to).
+    # marsim_nav's sim_navigation.launch.py overrides this with
+    # marsim_nav.rviz so Nav2 goals can actually be sent from RViz.
+    rviz_config_arg = DeclareLaunchArgument(
+        'rviz_config',
+        default_value=PathJoinSubstitution([
+            FindPackageShare('test_interface'), 'config',
+            'traj_simple.rviz']))
+
     quad_pid_params_arg = DeclareLaunchArgument(
         'quad_pid_params',
         default_value=PathJoinSubstitution([
@@ -164,11 +175,7 @@ def generate_launch_description():
         executable='rviz2',
         name='rvizvisualisation',
         output='screen',
-        arguments=['-d', PathJoinSubstitution([
-            FindPackageShare('test_interface'),
-            'config',
-            'traj_simple.rviz'
-        ])]
+        arguments=['-d', LaunchConfiguration('rviz_config')]
     )
 
     return LaunchDescription([
@@ -179,6 +186,7 @@ def generate_launch_description():
         init_yaw_arg,
         odom_topic_arg,
         quad_pid_params_arg,
+        rviz_config_arg,
         # Start the controller FIRST so it is already publishing hover RPM
         # before the dynamics node comes up. Otherwise the dynamics runs with
         # zero RPM for ~1s (Python/numpy startup) and the drone free-falls.

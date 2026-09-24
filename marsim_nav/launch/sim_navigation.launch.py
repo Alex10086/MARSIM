@@ -39,6 +39,12 @@ def generate_launch_description():
         launch_arguments={
             'quad_pid_params': os.path.join(
                 quad_pid_pkg, 'config', 'quad_pid_nav.yaml'),
+            # Without this the included launch would start RViz with MARSIM's
+            # traj_simple.rviz, whose only goal tool is the default 2D Goal Pose
+            # publishing /goal_pose -- which Nav2 does NOT subscribe to. Clicking
+            # it does nothing at all. marsim_nav.rviz adds nav2_rviz_plugins
+            # GoalTool, which sends the navigate_to_pose ACTION.
+            'rviz_config': os.path.join(nav_pkg, 'config', 'marsim_nav.rviz'),
         }.items())
 
     # TF + map_server + Nav2 (and its own lifecycle manager).

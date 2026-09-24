@@ -30,6 +30,8 @@ Panels:
     Name: Time
     SyncMode: 0
     SyncSource: ""
+  - Class: nav2_rviz_plugins/Navigation 2
+    Name: Navigation 2
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -310,6 +312,10 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /initialpose
+    # NOTE: rviz_default_plugins/SetGoal publishes /goal_pose, which NAV2 DOES
+    # NOT SUBSCRIBE TO -- clicking it does nothing. The real "Nav2 Goal" tool is
+    # nav2_rviz_plugins/GoalTool, which sends the navigate_to_pose ACTION.
+    - Class: nav2_rviz_plugins/GoalTool
     - Class: rviz_default_plugins/SetGoal
       Topic:
         Depth: 5

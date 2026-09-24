@@ -109,6 +109,14 @@ class SetpointResolver:
         self.ref_xy = None          # None until velocity mode is first entered
         self.ref_z = 0.0
         self.ref_yaw = 0.0
+        # True while HOLD should brake to `ref_xy` instead of holding the current
+        # pose. Set by the velocity branch (so a stale stream decelerates to the
+        # leashed reference) and cleared by the position branch. It is NOT
+        # cleared by HOLD itself: braking takes many ticks, and it is NOT left
+        # set by a position-mode excursion, because then forcing velocity mode
+        # on with nothing to consume would fly the drone back to a reference
+        # left over from an old session, arbitrarily far away.
+        self.freeze = False
 
     def update(self, *, mode, dt, cur_pos, cur_yaw,
                goal_active, goal_stamp, goal_xyz, goal_yaw,
@@ -128,6 +136,7 @@ class SetpointResolver:
             self.ref_yaw = advance_yaw(self.ref_yaw, wz, dt)
             if cfg['twist_follow_z'] and math.isfinite(twist_vz):
                 self.ref_z += twist_vz * dt
+            self.freeze = True
             self.source = VELOCITY
             return (np.array([self.ref_xy[0], self.ref_xy[1], self.ref_z]),
                     self.ref_yaw,
@@ -135,18 +144,18 @@ class SetpointResolver:
 
         if src == POSITION:
             self.source = POSITION
+            self.freeze = False
             return (np.array(goal_xyz, dtype=float), float(goal_yaw),
                     np.zeros(3), POSITION)
 
-        # HOLD
+        # HOLD. Braking to the reference left by a velocity session is a smooth
+        # stop; holding the current pose is the pre-twist no-command behaviour
+        # and the right answer for every other route into HOLD (a goal that
+        # expired, control_mode forcing a source with nothing to consume).
         self.source = HOLD
-        if self.ref_xy is None:
-            # Never been in velocity mode -> exactly the pre-twist behaviour
+        if not self.freeze or self.ref_xy is None:
             return (np.array(cur_pos, dtype=float), float(cur_yaw),
                     np.zeros(3), HOLD)
-        # A velocity session ended -> freeze the (leashed) reference. The leash
-        # guarantees it is within `leash` metres, so the drone decelerates to a
-        # stop just ahead instead of drifting on.
         return (np.array([self.ref_xy[0], self.ref_xy[1], self.ref_z]),
                 self.ref_yaw, np.zeros(3), HOLD)
 

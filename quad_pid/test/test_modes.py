@@ -303,3 +303,21 @@ def test_hold_after_velocity_session_returns_frozen_reference():
     p, _, _, s = _upd(r, mode=VELOCITY, twist_fresh=False, dt=0.1, pos=(0.0, 0.0, 5.0))
     assert s == HOLD
     assert p[0] > 0.0     # 冻结在 leash 内的参考点（而非回到原点）
+
+
+def test_hold_does_not_travel_to_a_stale_reference_after_a_mode_round_trip():
+    # Finding from Task 6 Step 3 (hot-switch verification). After a velocity
+    # session, leaving velocity mode and later forcing it back on with no fresh
+    # Twist must HOLD WHERE THE VEHICLE IS, not fly back to the reference that
+    # was frozen during the old session. That reference is only leashed to the
+    # vehicle at the time it was written, so after a long excursion in position
+    # mode the drone would otherwise fly arbitrarily far back to it.
+    r = _r()
+    for _ in range(5):
+        _upd(r, mode=VELOCITY, twist_fresh=True, dt=0.1, vx=1.0)   # ref -> 0.5
+    _upd(r, mode=POSITION, pos=(50., 0., 5.), goal_active=True, goal_stamp=9.0,
+         goal_xyz=(50.0, 0.0, 5.0), goal_yaw=0.0, dt=0.1)
+    p, y, v, s = _upd(r, mode=VELOCITY, pos=(50., 0., 5.), twist_fresh=False)
+    assert s == HOLD
+    assert p == pytest.approx(np.array([50.0, 0.0, 5.0]))
+    assert v == pytest.approx(np.zeros(3))

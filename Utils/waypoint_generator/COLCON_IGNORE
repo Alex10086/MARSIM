@@ -1,0 +1,4 @@
+# ROS 1 package (catkin / RViz 1 API). Not buildable under ROS 2 Jazzy and
+# nothing in the ROS 2 stack depends on it. Without this file `colcon build`
+# FAILS here and colcon then ABORTS every package queued behind it -- including
+# marsim_nav and quad_pid -- which looks like "the build is broken".

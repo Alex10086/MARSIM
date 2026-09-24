@@ -18,6 +18,12 @@ def generate_launch_description():
     init_z_arg = DeclareLaunchArgument('init_z_', default_value='1.0')
     init_yaw_arg = DeclareLaunchArgument('init_yaw', default_value='0.0')
     odom_topic_arg = DeclareLaunchArgument('odom_topic', default_value='odom')
+    quad_pid_params_arg = DeclareLaunchArgument(
+        'quad_pid_params',
+        default_value=PathJoinSubstitution([
+            FindPackageShare('quad_pid'), 'config', 'quad_pid_params.yaml']),
+        description='quad_pid parameter file. Pass '
+                    'config/quad_pid_nav.yaml for Nav2 velocity mode.')
 
     drone_id = LaunchConfiguration('drone_id')
     init_x = LaunchConfiguration('init_x_')
@@ -49,11 +55,7 @@ def generate_launch_description():
     )
 
     # ── quad_pid (replaces cascadePID) ──
-    quad_pid_params = PathJoinSubstitution([
-        FindPackageShare('quad_pid'),
-        'config',
-        'quad_pid_params.yaml'
-    ])
+    quad_pid_params = LaunchConfiguration('quad_pid_params')
     quad_pid_node = Node(
         package='quad_pid',
         executable='quad_pid_node',
@@ -110,7 +112,7 @@ def generate_launch_description():
             'yaw_fov': 70.4,
             'vertical_fov': 77.2,
             'min_raylength': 1.0,
-            'livox_linestep': 1.4,
+            'livox_linestep': 1,
             'curvature_limit': 100.0,
             'hash_cubesize': 5.0,
             'use_avia_pattern': 1,
@@ -169,6 +171,7 @@ def generate_launch_description():
         init_z_arg,
         init_yaw_arg,
         odom_topic_arg,
+        quad_pid_params_arg,
         # Start the controller FIRST so it is already publishing hover RPM
         # before the dynamics node comes up. Otherwise the dynamics runs with
         # zero RPM for ~1s (Python/numpy startup) and the drone free-falls.

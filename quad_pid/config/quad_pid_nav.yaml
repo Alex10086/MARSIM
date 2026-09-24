@@ -1,0 +1,46 @@
+# quad_pid — Nav2 速度模式档
+#
+# 用法（与 single_drone_quad_pid.launch.py 配合）：
+#   ros2 launch quad_pid single_drone_quad_pid.launch.py \
+#        quad_pid_params:=$(ros2 pkg prefix quad_pid)/share/quad_pid/config/quad_pid_nav.yaml
+#
+# 与默认档 quad_pid_params.yaml 的区别，以及每条的理由：
+quad_pid_node:
+  ros__parameters:
+    # 只用 /cmd_vel：Nav2 停发（到达/preempt/abort）时不回头去追一个陈旧的
+    # RViz 目标。'auto' 档下被锁存的位置目标永不过期，会接管控制权。
+    control_mode: "velocity"
+
+    # Jazzy 的 nav2_bringup 把 controller_server 的输出 remap 成 cmd_vel_nav
+    # （navigation_launch.py:137），所以默认的 /cmd_vel 收不到东西。
+    # ⚠️ 注意：本参数在节点启动时读取一次用于创建订阅者，**不支持运行期热改**
+    # （其余参数都支持 ros2 param set 热改）。改它必须重启节点。
+    cmd_vel_topic: "/cmd_vel_nav"
+
+    # Nav2 以 20Hz 发布；0.5s 的宽限足以跨过单次丢帧，又能在 Nav2 停止时
+    # 迅速冻结设定点（冻结后无人机减速停在参考点上，不会继续前冲）。
+    cmd_vel_timeout: 0.5
+
+    # 与 Nav2 参数文件里的 vx_max / vy_max 对齐。
+    # 注意区分：twist_max_* 钳的是【指令】；位置 PD 追赶前进中的参考点时会
+    # 短暂超速（实测 vx 限 1.5 时峰值约 1.9），真正的【达到速度】硬上限是
+    # max_horiz_speed。所以这里留出余量：合成速度 √(1.4²+1.4²)≈1.98 < 2.0。
+    twist_max_vx: 1.4
+    twist_max_vy: 1.4
+    twist_max_wz: 0.8
+
+    # Nav2 做 2D 导航，linear.z 恒为 0；高度由 quad_pid 自己锁存并保持。
+    twist_target_height: -1.0
+    twist_follow_z: false
+
+    # 位置模式下由 Nav2 流式重发目标；这里保留 false 以维持「目标失效即保持」
+    # 的语义（velocity 模式下本参数不参与仲裁，仅影响切回位置模式时）。
+    goal_latched: false
+
+    max_horiz_speed: 2.0
+
+    # 排障锚点：在 RViz 里画 /quad_pid/setpoint，可直接看出控制器在追什么，
+    # 一眼区分「Nav2 指令错」还是「控制器跟踪错」。
+    publish_setpoint: true
+
+    verbose: true

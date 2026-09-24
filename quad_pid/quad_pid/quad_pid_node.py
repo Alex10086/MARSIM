@@ -119,7 +119,6 @@ class QuadPIDNode(Node):
         self.resolver = SetpointResolver(
             leash=self.get_parameter('max_horiz_dist').value)
         self._last_tick = now      # wall clock, for the measured control dt
-        self._last_source = None   # log source transitions once
         self._bad_mode_warned = False   # warn once per bad control_mode
 
     def _create_subscriptions(self):
@@ -323,6 +322,9 @@ class QuadPIDNode(Node):
                        and (now - self.twist_stamp) <= cfg['cmd_vel_timeout'])
         tw = self.twist if self.twist is not None else Twist()
 
+        # The resolver owns the active source; capture it before the call so the
+        # transition can be logged without duplicating that state here.
+        prev_source = self.resolver.source
         pos_des, yaw_des, vel_des, source = self.resolver.update(
             mode=cfg['control_mode'], dt=dt,
             cur_pos=self.state['pos'], cur_yaw=yaw_cur,
@@ -332,9 +334,8 @@ class QuadPIDNode(Node):
             twist_vx=tw.linear.x, twist_vy=tw.linear.y, twist_vz=tw.linear.z,
             twist_wz=tw.angular.z, cfg=cfg)
 
-        if source != self._last_source:
+        if source != prev_source:
             self.get_logger().info(f'control source -> {source}')
-            self._last_source = source
 
         # Safety S2: distance limiting
         delta = pos_des - self.state['pos']

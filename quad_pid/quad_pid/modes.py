@@ -97,6 +97,12 @@ def select_source(mode, goal_active, goal_stamp, twist_fresh, twist_stamp):
     'position' / 'velocity' force a source (subject to that source being
     usable); 'auto' is last-writer-wins between the two. Staleness is folded
     into `goal_active` / `twist_fresh` by the caller.
+
+    An unrecognised `mode` deliberately falls back to 'auto' rather than
+    raising: a typo in `control_mode` must not kill the flight loop. The node
+    logs a one-time warning when it sees one, and the fallback is pinned by
+    test_select_source_treats_an_unknown_mode_as_auto so it is intentional
+    rather than accidental.
     """
     usable_pos = bool(goal_active)
     usable_vel = bool(twist_fresh)
@@ -105,7 +111,7 @@ def select_source(mode, goal_active, goal_stamp, twist_fresh, twist_stamp):
         return POSITION if usable_pos else HOLD
     if mode == VELOCITY:
         return VELOCITY if usable_vel else HOLD
-    # auto
+    # 'auto' -- and any unrecognised value (see docstring).
     if usable_pos and usable_vel:
         return POSITION if goal_stamp >= twist_stamp else VELOCITY
     if usable_pos:
@@ -170,20 +176,25 @@ class SetpointResolver:
             self.ref_xy = advance_setpoint(self.ref_xy, (wx, wy), dt,
                                            self.leash, (cur_pos[0], cur_pos[1]))
             self.ref_yaw = advance_yaw(self.ref_yaw, wz, dt)
+            vz_ff = 0.0
             if cfg['twist_follow_z']:
                 # linear.z is the one field clamp_twist's signature does not
                 # cover, so a FINITE but absurd value (1e308) would overflow
                 # ref_z to inf within a few ticks and from there poison the S2
                 # carrot (inf * 0.0 = NaN). Rate-limit it, then band the result.
-                vz = clamp_z_rate(twist_vz, cfg['twist_max_vz'])
-                self.ref_z = min(max(self.ref_z + vz * dt, MIN_HEIGHT),
+                vz_ff = clamp_z_rate(twist_vz, cfg['twist_max_vz'])
+                self.ref_z = min(max(self.ref_z + vz_ff * dt, MIN_HEIGHT),
                                  MAX_HEIGHT)
             self.freeze = True
             self.source = VELOCITY
+            # z gets the same feedforward as xy. Without it, enabling
+            # twist_follow_z would reintroduce the KD/KP*v tracking lag that the
+            # xy feedforward exists to remove. When twist_follow_z is off this
+            # is exactly 0.0, so the default profile is untouched.
             return self._out(np.array([self.ref_xy[0], self.ref_xy[1],
                                        self.ref_z]),
                              self.ref_yaw,
-                             np.array([wx, wy, 0.0]), VELOCITY)
+                             np.array([wx, wy, vz_ff]), VELOCITY)
 
         if src == POSITION:
             self.source = POSITION

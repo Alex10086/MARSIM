@@ -112,6 +112,13 @@ def generate_launch_description():
             'yaw_fov': 70.4,
             'vertical_fov': 77.2,
             'min_raylength': 1.0,
+            # NOTE: livox_linestep is declared as an INTEGER by the node
+            # (opengl_render_node.cpp:44 -> declare_parameter("livox_linestep", 1),
+            # read at :75 via .as_int()). Passing a float here makes the node
+            # throw rclcpp::exceptions::InvalidParameterTypeException and die,
+            # so /cloud never exists and Nav2's obstacle layer has no input.
+            # (pointcloud_render_node.cpp is the dead ROS1-style node; do not
+            # look there for parameter types.)
             'livox_linestep': 1,
             'curvature_limit': 100.0,
             'hash_cubesize': 5.0,

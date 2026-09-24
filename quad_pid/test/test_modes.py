@@ -1,21 +1,9 @@
 import math
 import pytest
 
-from quad_pid.geometry import wrap_to_pi
 from quad_pid.modes import (POSITION, VELOCITY, HOLD,
                             clamp_twist, body_to_world_velocity,
                             advance_yaw, advance_setpoint, select_source)
-
-
-# ── wrap_to_pi ────────────────────────────────────────────────────────
-def test_wrap_to_pi_leaves_in_range_untouched():
-    for a in (0.0, 1.0, -1.0, math.pi - 1e-9):
-        assert wrap_to_pi(a) == pytest.approx(a, abs=1e-12)
-
-def test_wrap_to_pi_wraps_both_directions():
-    assert wrap_to_pi(math.pi + 0.1) == pytest.approx(-math.pi + 0.1, abs=1e-9)
-    assert wrap_to_pi(-math.pi - 0.1) == pytest.approx(math.pi - 0.1, abs=1e-9)
-    assert wrap_to_pi(3 * math.pi) == pytest.approx(math.pi, abs=1e-9)
 
 
 # ── clamp_twist ───────────────────────────────────────────────────────
@@ -416,3 +404,44 @@ def test_ref_z_is_banded():
     for _ in range(200):
         p2, *_ = r2.update(dt=0.1, twist_vz=5.0, **kw)
     assert p2[2] == pytest.approx(MAX_HEIGHT)
+
+
+# ── deferred minors 的处置 ─────────────────────────────────────────────
+def test_select_source_treats_an_unknown_mode_as_auto():
+    # Deliberate fallback, pinned so it is intentional rather than accidental:
+    # a typo in control_mode must not crash the flight loop, so the node warns
+    # once and acts on the newest valid command ('auto'). Documented in README.
+    assert select_source('Velocity', True, 1.0, True, 9.0) == VELOCITY
+    assert select_source('', True, 9.0, False, 0.0) == POSITION
+    assert select_source(None, False, 0.0, True, 1.0) == VELOCITY
+    assert select_source('nonsense', False, 0.0, False, 0.0) == HOLD
+
+
+def test_twist_follow_z_gets_the_same_velocity_feedforward_as_xy():
+    # Without this, enabling twist_follow_z reintroduces exactly the KD/KP*v
+    # tracking lag that the xy feedforward was added to remove (D3).
+    cfg = dict(CFG, twist_follow_z=True, twist_max_vz=1.0)
+    r = SetpointResolver(5.0)
+    kw = dict(mode=VELOCITY, cur_pos=np.array([0., 0., 5.0]), cur_yaw=0.0,
+              goal_active=False, goal_stamp=0.0, goal_xyz=None, goal_yaw=None,
+              twist_fresh=True, twist_stamp=1.0, twist_vx=0.0, twist_vy=0.0,
+              twist_wz=0.0, cfg=cfg)
+    r.update(dt=0.0, twist_vz=0.5, **kw)
+    p, _, v, _ = r.update(dt=0.1, twist_vz=0.5, **kw)
+    assert v[2] == pytest.approx(0.5)
+    assert p[2] == pytest.approx(5.05, abs=1e-9)
+
+
+def test_twist_follow_z_off_leaves_z_feedforward_at_zero():
+    # The default profile has twist_follow_z=false, so z must stay untouched:
+    # a Nav2 linear.z of 0 must never become a feedforward term.
+    cfg = dict(CFG, twist_follow_z=False, twist_max_vz=1.0)
+    r = SetpointResolver(5.0)
+    kw = dict(mode=VELOCITY, cur_pos=np.array([0., 0., 5.0]), cur_yaw=0.0,
+              goal_active=False, goal_stamp=0.0, goal_xyz=None, goal_yaw=None,
+              twist_fresh=True, twist_stamp=1.0, twist_vx=0.0, twist_vy=0.0,
+              twist_wz=0.0, cfg=cfg)
+    r.update(dt=0.0, twist_vz=0.5, **kw)
+    p, _, v, _ = r.update(dt=0.1, twist_vz=0.5, **kw)
+    assert v[2] == pytest.approx(0.0)
+    assert p[2] == pytest.approx(5.0)

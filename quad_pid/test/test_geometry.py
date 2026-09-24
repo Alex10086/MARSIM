@@ -1,6 +1,7 @@
 import math
 import pytest
-from quad_pid.geometry import accel_to_attitude, yaw_from_quaternion, shortest_angle
+from quad_pid.geometry import (accel_to_attitude, accel_to_attitude_yaw,
+                               yaw_from_quaternion, shortest_angle, wrap_to_pi)
 
 G = 9.81
 
@@ -149,3 +150,14 @@ def test_yaw_compensation_preserves_commanded_thrust_direction():
     assert zx == pytest.approx(ax / n, abs=1e-9)
     assert zy == pytest.approx(ay / n, abs=1e-9)
     assert zz == pytest.approx(az / n, abs=1e-9)
+
+
+# ── wrap_to_pi ────────────────────────────────────────────────────────
+def test_wrap_to_pi_leaves_in_range_untouched():
+    for a in (0.0, 1.0, -1.0, math.pi - 1e-9):
+        assert wrap_to_pi(a) == pytest.approx(a, abs=1e-12)
+
+def test_wrap_to_pi_wraps_both_directions():
+    assert wrap_to_pi(math.pi + 0.1) == pytest.approx(-math.pi + 0.1, abs=1e-9)
+    assert wrap_to_pi(-math.pi - 0.1) == pytest.approx(math.pi - 0.1, abs=1e-9)
+    assert wrap_to_pi(3 * math.pi) == pytest.approx(math.pi, abs=1e-9)

@@ -1,0 +1,6 @@
+image: forest.pgm
+resolution: 0.1
+origin: [-30.099533081054688, -19.41337013244629, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196

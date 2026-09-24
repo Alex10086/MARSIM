@@ -1,1 +1,4 @@
 uav_simulator/local_sensing/data/*
+marsim_nav/maps/*.pgm
+__pycache__/
+*.pyc

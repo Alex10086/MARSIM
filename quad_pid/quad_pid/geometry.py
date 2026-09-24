@@ -88,3 +88,8 @@ def accel_to_attitude_yaw(a_x: float, a_y: float, a_z: float,
     pitch_des = math.atan2(b_x, b_z)
     roll_des = math.atan2(-b_y, math.sqrt(b_x * b_x + b_z * b_z))
     return roll_des, pitch_des
+
+
+def wrap_to_pi(angle: float) -> float:
+    """Wrap an angle to (-π, π]."""
+    return math.atan2(math.sin(angle), math.cos(angle))

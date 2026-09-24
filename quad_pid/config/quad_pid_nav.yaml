@@ -30,11 +30,17 @@ quad_pid_node:
     # 两者相等时，达到速度不会超过 Nav2 规划所假设的 vx_max。
     # 代价：斜向指令合成 √2×1.4 ≈ 1.98 会被压到 1.4，斜向吞吐降低。若要完整
     # 斜向吞吐，把 max_horiz_speed 提到 √2×vx_max 并接受约 21% 的瞬时超调。
-    twist_max_vx: 1.4
-    twist_max_vy: 1.4
-    twist_max_wz: 0.8
+    twist_max_vx: 0.5
+    twist_max_vy: 0.5
+    twist_max_wz: 0.6
     twist_max_vz: 1.0
-    max_horiz_speed: 1.4
+    max_horiz_speed: 0.5
+
+    # max_horiz_dist 在 Twist 模式下同时是【设定点牵引绳(leash)】和 S2 胡萝卜钳位。
+    # 默认 5.0m 在密林里太长：参考点可以跑到无人机前方 5m，位置 PD 于是猛推着
+    # 无人机切内弯，实测贴到障碍 0.10m（< robot_radius 0.35）并触发 ABORT。
+    # 收到 1.0m 让设定点紧贴机体，从而贴着全局路径飞。
+    max_horiz_dist: 1.0
 
     # Nav2 做 2D 导航，linear.z 恒为 0；高度由 quad_pid 自己锁存并保持。
     twist_target_height: -1.0

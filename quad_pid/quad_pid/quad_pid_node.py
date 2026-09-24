@@ -12,7 +12,9 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension, MultiArrayLayout
 
 from quad_pid.mixer import allocate
-from quad_pid.geometry import accel_to_attitude, yaw_from_quaternion, shortest_angle, limit_horizontal_speed
+from quad_pid.geometry import (accel_to_attitude, accel_to_attitude_yaw,
+                               yaw_from_quaternion, shortest_angle,
+                               limit_horizontal_speed)
 from quad_pid.goal import goal_is_active, sanitize_goal
 
 
@@ -286,7 +288,16 @@ class QuadPIDNode(Node):
                 a_des[2] = min(a_des[2], max(cfg['max_vert_acc_down'], a_des_z_corr))
 
         # ── Layer 2: acceleration → attitude + thrust ──
-        roll_des, pitch_des = accel_to_attitude(a_des[0], a_des[1], a_des[2])
+        # roll/pitch are BODY-frame quantities, so the world-frame desired
+        # acceleration must be rotated by the current yaw before extraction.
+        # Without this the realized horizontal accel is the commanded one
+        # rotated by -yaw — a non-conservative field that makes the drone orbit
+        # (stable limit cycle) whenever yaw != 0 (e.g. an RViz drag that sets a
+        # non-zero goal yaw).
+        q = self.state['quat']
+        roll_cur, pitch_cur, yaw_cur = self._quat_to_euler(q[0], q[1], q[2], q[3])
+        roll_des, pitch_des = accel_to_attitude_yaw(
+            a_des[0], a_des[1], a_des[2], yaw_cur)
 
         # Clamp attitude
         mt = cfg['max_tilt_rad']
@@ -303,9 +314,6 @@ class QuadPIDNode(Node):
         F_total = max(0.0, min(4.0 * cfg['mass'] * 9.81, F_total))
 
         # ── Layer 3: attitude error → torque ──
-        q = self.state['quat']
-        roll_cur, pitch_cur, yaw_cur = self._quat_to_euler(q[0], q[1], q[2], q[3])
-
         e_roll = shortest_angle(roll_des, roll_cur)
         e_pitch = shortest_angle(pitch_des, pitch_cur)
         e_yaw = shortest_angle(yaw_des, yaw_cur)

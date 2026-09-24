@@ -60,3 +60,31 @@ def limit_horizontal_speed(a_x: float, a_y: float,
     if outward <= 0.0:
         return a_x, a_y                        # braking / neutral: keep
     return a_x - outward * ux, a_y - outward * uy
+
+
+def accel_to_attitude_yaw(a_x: float, a_y: float, a_z: float,
+                          yaw: float) -> tuple[float, float]:
+    """Like `accel_to_attitude` but compensates for the vehicle's yaw.
+
+    The desired thrust direction is the world-frame unit vector of
+    ``[a_x, a_y, a_z]`` (a_z already includes gravity compensation).  Because
+    roll and pitch are *body*-frame quantities, this direction must first be
+    rotated from the world frame into the body frame using yaw:
+
+        [b_x, b_y, b_z] = R_z(-yaw) @ [a_x, a_y, a_z]
+
+    Omitting this rotation means the realized horizontal acceleration is the
+    commanded one rotated by -yaw, which is a non-conservative force field: the
+    drone then traces a stable limit cycle (orbits) instead of converging.
+
+    Returns (roll_des, pitch_des) in radians. At yaw == 0 this reduces exactly
+    to `accel_to_attitude`.
+    """
+    c, s = math.cos(yaw), math.sin(yaw)
+    b_x = c * a_x + s * a_y
+    b_y = -s * a_x + c * a_y
+    b_z = a_z
+
+    pitch_des = math.atan2(b_x, b_z)
+    roll_des = math.atan2(-b_y, math.sqrt(b_x * b_x + b_z * b_z))
+    return roll_des, pitch_des

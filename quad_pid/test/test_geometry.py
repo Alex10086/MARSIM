@@ -91,3 +91,61 @@ def test_speed_governor_partial_strip_along_diagonal():
 def test_speed_governor_noop_at_rest():
     ax, ay = limit_horizontal_speed(3.0, 3.0, 0.0, 0.0, max_speed=2.0)
     assert (ax, ay) == (3.0, 3.0)
+
+
+# ── Yaw compensation in attitude extraction ───────────────────────────
+# `accel_to_attitude` must account for the vehicle's yaw. Without it, a non-zero
+# yaw rotates the realized horizontal acceleration away from the commanded one,
+# producing a non-conservative force field and a stable *limit cycle* (the drone
+# orbits instead of converging). Observed: goal (5,0,2) with yaw=-54° made the
+# drone circle the origin at r≈5 m indefinitely.
+from quad_pid.geometry import accel_to_attitude_yaw
+
+
+def test_yaw_zero_matches_legacy_behaviour():
+    r0, p0 = accel_to_attitude(3.0, -2.0, G)
+    r1, p1 = accel_to_attitude_yaw(3.0, -2.0, G, 0.0)
+    assert r1 == pytest.approx(r0, abs=1e-9)
+    assert p1 == pytest.approx(p0, abs=1e-9)
+
+
+def test_yaw_pure_hover_is_level():
+    roll, pitch = accel_to_attitude_yaw(0.0, 0.0, G, -0.94)
+    assert roll == pytest.approx(0.0, abs=1e-9)
+    assert pitch == pytest.approx(0.0, abs=1e-9)
+
+
+def test_world_x_accel_with_yaw_90_requires_roll_not_pitch():
+    # Body x points along world +y when yaw=90°. To accelerate toward world +x
+    # the drone must roll (about body x), with no pitch.
+    roll, pitch = accel_to_attitude_yaw(2.0, 0.0, G, math.pi / 2)
+    assert pitch == pytest.approx(0.0, abs=1e-9)
+    assert roll > 0.0
+
+
+def test_yaw_compensation_rotates_attitude_tilt_direction():
+    # Desired world accel along +x. At yaw=0 that is pure pitch; at yaw=90° it
+    # becomes pure roll of the same magnitude — the tilt simply rotates with the
+    # body.
+    roll0, pitch0 = accel_to_attitude_yaw(2.0, 0.0, G, 0.0)
+    roll90, pitch90 = accel_to_attitude_yaw(2.0, 0.0, G, math.pi / 2)
+    assert roll0 == pytest.approx(0.0, abs=1e-9)
+    assert pitch90 == pytest.approx(0.0, abs=1e-9)
+    assert roll90 == pytest.approx(pitch0, abs=1e-6)
+
+
+def test_yaw_compensation_preserves_commanded_thrust_direction():
+    # The exact invariant: roll/pitch/yaw must map body-z to the commanded
+    # direction. Reconstruct the desired body-z axis in world frame and check it
+    # aligns with [a_x, a_y, a_z] for any yaw.
+    import math as m
+    ax, ay, az, yaw = 2.0, 1.0, G, -0.94
+    roll, pitch = accel_to_attitude_yaw(ax, ay, az, yaw)
+    # R = Rz(yaw) Ry(pitch) Rx(roll); body-z in world:
+    zx = m.cos(yaw) * m.sin(pitch) * m.cos(roll) - m.sin(yaw) * (-m.sin(roll))
+    zy = m.sin(yaw) * m.sin(pitch) * m.cos(roll) + m.cos(yaw) * (-m.sin(roll))
+    zz = m.cos(pitch) * m.cos(roll)
+    n = m.sqrt(ax * ax + ay * ay + az * az)
+    assert zx == pytest.approx(ax / n, abs=1e-9)
+    assert zy == pytest.approx(ay / n, abs=1e-9)
+    assert zz == pytest.approx(az / n, abs=1e-9)

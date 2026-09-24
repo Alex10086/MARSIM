@@ -25,7 +25,14 @@ class OccupancyGridNode(Node):
         self.declare_parameter('z_min', 0.15)
         self.declare_parameter('z_max', 3.0)
         self.declare_parameter('margin', 2.0)
-        self.declare_parameter('inflation_radius', 0.4)
+        # 0.0, NOT 0.4: Nav2's inflation_layer already inflates the static
+        # layer's lethal cells at runtime, using the costmap's own
+        # inscribed_radius. Baking a dilation into the PGM double-inflates --
+        # an obstacle ends up with 0.4 (ours) + 0.35 (Nav2's) = 0.75 m of
+        # clearance demanded, which in a dense forest invents walls the drone
+        # could fly through and makes the planner fail with "Start occupied".
+        # The PGM must carry TRUE obstacles only.
+        self.declare_parameter('inflation_radius', 0.0)
         self._done = False
         topic = self.get_parameter('cloud_topic').value
         self.create_subscription(PointCloud2, topic, self._cb, 1)

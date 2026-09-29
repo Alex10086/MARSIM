@@ -16,7 +16,7 @@ from quad_pid.geometry import (accel_to_attitude, accel_to_attitude_yaw,
                                yaw_from_quaternion, shortest_angle,
                                limit_horizontal_speed)
 from quad_pid.goal import goal_is_active, sanitize_goal
-from quad_pid.modes import SetpointResolver, clamp_dt
+from quad_pid.modes import SetpointResolver, clamp_dt, clamp_to_leash
 
 
 class QuadPIDNode(Node):
@@ -337,12 +337,8 @@ class QuadPIDNode(Node):
         if source != prev_source:
             self.get_logger().info(f'control source -> {source}')
 
-        # Safety S2: distance limiting
-        delta = pos_des - self.state['pos']
-        dist = np.linalg.norm(delta)
-        if dist > cfg['max_horiz_dist']:
-            delta = delta * (cfg['max_horiz_dist'] / dist)
-            pos_des = self.state['pos'] + delta
+        # Safety S2: distance limiting (horizontal only — see modes.clamp_to_leash)
+        pos_des = clamp_to_leash(pos_des, self.state['pos'], cfg['max_horiz_dist'])
 
         # Publish AFTER the S2 clamp: the topic exists to show the setpoint the
         # controller is actually chasing, and L1 uses the post-clamp pos_des.

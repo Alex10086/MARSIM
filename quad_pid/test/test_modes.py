@@ -445,3 +445,32 @@ def test_twist_follow_z_off_leaves_z_feedforward_at_zero():
     p, _, v, _ = r.update(dt=0.1, twist_vz=0.5, **kw)
     assert v[2] == pytest.approx(0.0)
     assert p[2] == pytest.approx(5.0)
+
+
+def test_leash_clamps_horizontal_only_and_leaves_z():
+    """spec 第 6 节决策 A：z 误差不应被水平限幅压掉。
+
+    这是「中途升降」能用的前置条件 —— 否则爬 8 m 时整条 delta 被等比缩到
+    max_horiz_dist，升降被拖到极慢。
+    """
+    import numpy as np
+    from quad_pid.modes import clamp_to_leash
+
+    cur = np.array([0.0, 0.0, 1.0])
+    des = np.array([0.0, 0.0, 9.0])          # 纯 z 误差 8 m
+    out = clamp_to_leash(des, cur, 0.3)
+    assert out[2] == pytest.approx(9.0)      # z 不被压
+    assert out[0] == pytest.approx(0.0)
+    assert out[1] == pytest.approx(0.0)
+
+
+def test_leash_still_clamps_oversized_horizontal_error():
+    import numpy as np
+    from quad_pid.modes import clamp_to_leash
+
+    cur = np.array([0.0, 0.0, 1.0])
+    des = np.array([3.0, 4.0, 1.0])          # 水平误差 5 m
+    out = clamp_to_leash(des, cur, 0.3)
+    horiz = np.hypot(out[0] - cur[0], out[1] - cur[1])
+    assert horiz == pytest.approx(0.3)       # 水平仍被钳
+    assert out[2] == pytest.approx(1.0)      # z 不受影响

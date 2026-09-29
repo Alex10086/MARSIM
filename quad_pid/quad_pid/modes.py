@@ -91,6 +91,26 @@ def advance_setpoint(ref_xy, v_world, dt, leash, cur_xy):
     return (nx, ny)
 
 
+def clamp_to_leash(pos_des, cur_pos, leash):
+    """把位置参考钳到距当前水平位置 leash 米内；**z 分量不动**。
+
+    参数名叫 max_horiz_dist，就该只管水平。z 由 MIN_HEIGHT/MAX_HEIGHT
+    与高度环自己负责，不能被水平限幅压掉 —— 否则爬升 8 m 时 z 误差被压到
+    0.3 m，升降被拖到极慢（spec 第 6 节决策 A）。
+    """
+    pos_des = np.asarray(pos_des, dtype=float)
+    cur_pos = np.asarray(cur_pos, dtype=float)
+    out = pos_des.copy()
+    dx = out[0] - cur_pos[0]
+    dy = out[1] - cur_pos[1]
+    d = math.hypot(dx, dy)
+    if d > leash and d > 1e-9:
+        k = leash / d
+        out[0] = cur_pos[0] + dx * k
+        out[1] = cur_pos[1] + dy * k
+    return out
+
+
 def select_source(mode, goal_active, goal_stamp, twist_fresh, twist_stamp):
     """Arbitrate between the position and velocity command sources.
 

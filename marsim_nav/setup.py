@@ -32,6 +32,7 @@ setup(
             'nav_occupancy = marsim_nav.occ_probe:main',
             'vcorridor = marsim_nav.vcorridor:main',
             'merge_cmd_vel = marsim_nav.merge_cmd_vel:main',
+            'gen_layers = marsim_nav.gen_layers:main',
         ],
     },
 )

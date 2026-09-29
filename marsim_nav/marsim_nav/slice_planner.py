@@ -104,3 +104,102 @@ def plan_single_layer(grid, start_ij, goal_ij, origin, res, alpha=2.0):
                  for i in range(len(path) - 1)) * float(res)
     return {"path": path, "cost": float(dist[(gx, gy)]), "length": float(length),
             "min_clearance": 0.0, "reached": True}
+
+
+def _corridor_clear(points_xyz, x, y, z0, z1, radius):
+    from marsim_nav.vcorridor import check_vertical_corridor
+    return bool(check_vertical_corridor(points_xyz, x, y, z0, z1, radius)["clear"])
+
+
+def plan_slices(grids, z_centers, points_xyz, start_xyz, goal_xyz, origin, res,
+                alpha=2.0, beta=1.5, radius=0.25):
+    """多层 A*：状态 (ix, iy, 层号)，层间移动需垂直走廊通畅。
+
+    - 层内：8 邻接，cost = 距离 × (1 + α × 该格占用)
+    - 层间：同格换层，cost = β × |Δz|，**前置条件是该处走廊通畅**
+
+    返回 {"waypoints": [(x,y,z)...], "layer_costs": [...], "reached": bool}。
+    waypoints 是世界坐标；相邻路点 z 不同处即升降点。
+    """
+    gs = [np.asarray(g) for g in grids]
+    if not gs or len(gs) != len(z_centers):
+        raise ValueError('grids 与 z_centers 数量必须一致且非空')
+    shape = gs[0].shape
+    if any(g.shape != shape for g in gs):
+        raise ValueError('所有层的栅格尺寸必须一致')
+    h, w = shape
+    nL = len(gs)
+    zs = [float(z) for z in z_centers]
+
+    sx, sy = world_to_grid(start_xyz[0], start_xyz[1], origin, res)
+    gx, gy = world_to_grid(goal_xyz[0], goal_xyz[1], origin, res)
+    if not (0 <= sx < w and 0 <= sy < h and 0 <= gx < w and 0 <= gy < h):
+        return {"waypoints": [], "layer_costs": [], "reached": False}
+
+    # 起点/终点的层：最接近其 z 的那一层
+    sk = min(range(nL), key=lambda k: abs(zs[k] - float(start_xyz[2])))
+    gk = min(range(nL), key=lambda k: abs(zs[k] - float(goal_xyz[2])))
+
+    blocked = [g == 0 for g in gs]           # 0 = 障碍
+    occ = [1.0 - g.astype(np.float64) / 255.0 for g in gs]
+    step = [1.0 + float(alpha) * o for o in occ]
+    min_occ = min(float(o.min()) for o in occ)
+
+    def hcost(x, y):
+        return math.hypot(x - gx, y - gy) * (1.0 + float(alpha) * min_occ)
+
+    start, goal = (sx, sy, sk), (gx, gy, gk)
+    dist = {start: 0.0}
+    prev = {}
+    pq = [(hcost(sx, sy), start)]
+    seen = set()
+    while pq:
+        _, cur = heapq.heappop(pq)
+        if cur in seen:
+            continue
+        seen.add(cur)
+        if cur == goal:
+            break
+        cx, cy, ck = cur
+        # 层内
+        for nx, ny, d in _neighbours(cx, cy, w, h):
+            if blocked[ck][ny, nx]:
+                continue
+            nxt = (nx, ny, ck)
+            nd = dist[cur] + d * float(step[ck][ny, nx])
+            if nd < dist.get(nxt, math.inf):
+                dist[nxt] = nd
+                prev[nxt] = cur
+                heapq.heappush(pq, (nd + hcost(nx, ny), nxt))
+        # 层间：同格换层，需走廊通畅
+        wx, wy = grid_to_world(cx, cy, origin, res)
+        for nk in range(nL):
+            if nk == ck or blocked[nk][cy, cx]:
+                continue
+            if not _corridor_clear(points_xyz, wx, wy, zs[ck], zs[nk], radius):
+                continue
+            nxt = (cx, cy, nk)
+            nd = dist[cur] + abs(zs[nk] - zs[ck]) * float(beta)
+            if nd < dist.get(nxt, math.inf):
+                dist[nxt] = nd
+                prev[nxt] = cur
+                heapq.heappush(pq, (nd + hcost(cx, cy), nxt))
+
+    # 每层单独也跑一次，用于 layer_costs（可解释性）
+    layer_costs = []
+    for k in range(nL):
+        single = plan_single_layer(gs[k], (sx, sy), (gx, gy), origin, res, alpha)
+        layer_costs.append({
+            "layer": k, "z": zs[k], "reachable": bool(single["reached"]),
+            "path_len": float(single["length"]), "cost": float(single["cost"]),
+        })
+
+    if goal not in dist:
+        return {"waypoints": [], "layer_costs": layer_costs, "reached": False}
+
+    chain = [goal]
+    while chain[-1] != start:
+        chain.append(prev[chain[-1]])
+    chain.reverse()
+    waypoints = [grid_to_world(ix, iy, origin, res) + (zs[k],) for ix, iy, k in chain]
+    return {"waypoints": waypoints, "layer_costs": layer_costs, "reached": True}

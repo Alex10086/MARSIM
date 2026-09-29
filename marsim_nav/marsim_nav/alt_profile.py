@@ -17,6 +17,15 @@ def next_vz(z_current, z_target, kp=0.8, vz_max=0.6, arrive_tol=0.15):
     return max(-vz_max, min(vz_max, kp * err))
 
 
+def segment_done(z_current, z_target, arrive_tol=0.15):
+    """该段是否完成 —— 只看**高度**，不看 vz。
+
+    vz == 0 同时表示「已到达目标高度」与「被走廊挡住」。按 vz 判定会让
+    受阻的段被当成已完成而跳过（实测：连跳 3 段后越界，任务静默放弃）。
+    """
+    return abs(float(z_target) - float(z_current)) <= float(arrive_tol)
+
+
 def commanded_vz(blocked, z_current, z_target, kp=0.8, vz_max=0.6,
                  arrive_tol=0.15):
     """安全不变量：受阻时 vz 必须为 0，与高度误差无关。
@@ -124,7 +133,8 @@ def main(args=None):
                               self.get_parameter('vz_max').value,
                               self.get_parameter('arrive_tol').value)
             self._pub.publish(Float32(data=float(vz)))
-            if vz == 0.0:
+            if segment_done(self._z, seg['z'],
+                            self.get_parameter('arrive_tol').value):
                 self._idx += 1
 
     rclpy.init(args=args)

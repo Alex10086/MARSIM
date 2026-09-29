@@ -100,3 +100,18 @@ def test_blocked_state_persists_until_a_clear_recheck():
     cleared.add(0); blocked = False
     assert needs_corridor_check(0, 1.0, 10.0, cleared, 2.5, 99.0) is False
     assert blocked is False
+
+
+def test_segment_advances_on_height_not_on_zero_vz():
+    """该段是否完成必须看**高度**，不能看 vz。
+
+    vz==0 同时表示「已到达目标高度」和「被走廊挡住」。按 vz 判断会让
+    受阻的段被当成已完成而跳过 —— 实测：节点连跳 3 个段后越界，
+    从此只发 vz=0 并 return，整个任务静默放弃。
+    """
+    from marsim_nav.alt_profile import segment_done
+
+    assert segment_done(1.0, 10.0, 0.15) is False    # 被挡住：没到高度
+    assert segment_done(9.95, 10.0, 0.15) is True    # 到达
+    assert segment_done(10.1, 10.0, 0.15) is True    # 到达（含容差）
+    assert segment_done(10.5, 10.0, 0.15) is False   # 超出容差

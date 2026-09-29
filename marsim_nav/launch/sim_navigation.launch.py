@@ -20,6 +20,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -47,6 +48,12 @@ def generate_launch_description():
             'rviz_config': os.path.join(nav_pkg, 'config', 'marsim_nav.rviz'),
         }.items())
 
+    # 垂直走廊检查要读的静态点云：与 quad_pid 的 single_drone_quad_pid.launch.py
+    # 喂给 map_generator / opengl_render_node 的是同一个 PCD。
+    map_pcd_path = os.path.join(
+        get_package_share_directory('map_generator'),
+        'resource', 'small_forest01cutoff.pcd')
+
     # TF + map_server + Nav2 (and its own lifecycle manager).
     nav = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -71,7 +78,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'profile': os.path.join(nav_pkg, 'config', 'alt_profile_example.yaml'),
-            'map_pcd': map_path,          # 垂直走廊检查要读的静态点云
+            'map_pcd': map_pcd_path,      # 垂直走廊检查要读的静态点云
             'check_radius': 0.25,          # == robot_radius
             'vz_max': 0.6,                 # 与 quad_pid_nav.yaml 的 twist_max_vz 对齐
         }],

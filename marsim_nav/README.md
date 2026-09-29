@@ -143,16 +143,19 @@ ros2 topic info -v /cmd_vel_nav     # Subscription 里应出现 quad_pid_node
 
 ---
 
-## 7. 高度：当前是「2.5D + 固定高度」，不能动态变高
+## 7. 高度：Nav2 是 2D 的，变高走旁路
+
+**Nav2 是 2D 的**，但高度不是完全锁死的 —— 见 [§11 中途升降](#11-中途升降三维移动)。
 
 **Nav2 是 2D 的**，四个环节都锁死：
 
 | 环节 | 现状 | 后果 |
 |---|---|---|
 | 代价图 | `costmap_2d` 单张 XY 栅格 | z 仅用于**过滤**哪些点算障碍，之后丢弃。无法表达"1m 堵、3m 通" |
-| 高度带 | `[0.4, 1.6]` 固定在**世界系** | 不跟随无人机 |
+| 高度带（**全局地图**） | 按高度带**切片**生成（`gen_layers`） | 换高度就换一层图，见 §11 |
+| 高度带（**局部代价图**） | `[-0.7, +0.5]` 在 `lidar_link` 帧，**相对机体** | 随无人机高度自动跟随；代价：看不到上方障碍直到爬到那儿 |
 | 规划器 | `SmacPlanner2D` | 路径只有 XY；`NavigateToPose` 的 `z` 被忽略 |
-| 高度来源 | `quad_pid.twist_target_height` | Nav2 **从不**下达 z；进入速度模式时**锁存**当前高度并保持 |
+| 高度来源 | `alt_profile` → `/alt_cmd` → `merge_cmd_vel` → `quad_pid.twist_follow_z` | Nav2 **从不**下达 z（MPPI Omni 是平面模型），高度走旁路 |
 
 > Jazzy 的 Nav2 **没有 3D 规划器**（只有 `SmacPlanner2D`/`Hybrid`/`Lattice`）。
 > `VoxelLayer` 名字里有 voxel，但只用于更正确的标记/清除，**输出仍是 2D 代价图**。
@@ -355,3 +358,65 @@ cd src/quad_pid   && python3 -m pytest test/ -q      # 88 passed
 - `local_costmap` 数百个占据栅格，`frame=odom`
 - 高度全程锁定（`z_min == z_max`）
 - 短距导航 SUCCEEDED，`goal_err ≈ 0.22m`
+
+---
+
+## 11. 中途升降（三维移动）
+
+无人机可以在飞行途中爬升/降落，不再锁死在起飞高度。
+
+### 话题链
+
+```text
+Nav2 (MPPI Omni) → /cmd_vel_nav ─┐
+                                  ├→ merge_cmd_vel → /cmd_vel_merged → quad_pid
+alt_profile → /alt_cmd (vz) ─────┘
+```
+
+Nav2 的 MPPI 是**平面**模型，`linear.z` 恒为 0，所以高度指令走旁路。
+`quad_pid` 订阅 `/cmd_vel_merged`（见 `quad_pid_nav.yaml` 的 `cmd_vel_topic`）。
+
+### 剖面文件
+
+`config/alt_profile_example.yaml`：
+
+```yaml
+frame: world
+segments:
+  - {x: 5.0,   y: 0.0,  z: 10.0, note: "爬升到 L6"}
+  - {x: 20.0,  y: -3.0, z: 10.0, note: "巡航"}
+  - {x: 28.0,  y: -12.0, z: 1.0, note: "降落"}
+```
+
+`alt_profile` 按序执行：到达阈值 0.15 m 内即视为到达该段高度，转下一段。
+`vz = clamp(0.8 × (z_target − z_current), ±0.6 m/s)`。
+
+### 垂直走廊检查（安全底线）
+
+**爬升/降落之前必须查这条竖直柱子是否通畅。** 原因是：
+
+> 局部代价图的高度带是**相对机体**的（`[-0.7, +0.5]`，在 `lidar_link` 帧），
+> 所以它随机体高度自动跟随 —— 但也因此**看不到上方的障碍，直到你爬到那儿**。
+
+```bash
+# 起飞前批量预检（全部通畅返回 0，任一受阻返回 1）
+ros2 run marsim_nav vcorridor -- <cloud.pcd> <x> <y> <z0> <z1> [radius] [...]
+```
+
+检查不通过时 `alt_profile` **保持当前高度**并告警，由 Nav2 重规划或人工横移后再执行。
+
+### 多层地图
+
+```bash
+ros2 run marsim_nav gen_layers -- <cloud.pcd> <out_dir> [name]
+```
+
+按 7 个固定高度带（0.4–1.6 / 1.6–2.6 / 2.6–3.6 / 3.6–5.0 / 5.0–7.0 / 7.0–9.5 / 9.5–12.0 m）
+各生成一张 PGM/YAML。所有层共用同一套栅格范围，可直接叠加对比。
+
+### ⚠️ 硬规则
+
+- **`cmd_vel_topic` 仅在节点启动时读取一次**，不支持运行期热改。改它必须重启节点。
+- **`twist_follow_z` 必须为 `true`**，否则 `linear.z` 被忽略，无人机会锁死在起飞高度。
+- **`twist_max_vz` 与 `alt_profile` 的 `vz_max` 要对齐**（默认都是 0.6），
+  否则钳制发生在哪一层不明确。

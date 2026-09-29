@@ -53,9 +53,35 @@ def generate_launch_description():
             nav_pkg, 'launch', 'navigation.launch.py')),
         launch_arguments={'map': src_map_yaml}.items())
 
+    # 把高度指令并入 Nav2 的平面速度。Nav2 的 MPPI Omni 是平面模型，
+    # linear.z 恒为 0 —— 没有人告诉无人机该爬。quad_pid 订阅它而不是
+    # /cmd_vel_nav（见 quad_pid_nav.yaml 的 cmd_vel_topic）。
+    merge_cmd_vel_node = Node(
+        package='marsim_nav',
+        executable='merge_cmd_vel',
+        name='merge_cmd_vel_node',
+        output='screen',
+    )
+
+    # 按剖面发 /alt_cmd；爬升前查垂直走廊。
+    alt_profile_node = Node(
+        package='marsim_nav',
+        executable='alt_profile',
+        name='alt_profile_node',
+        output='screen',
+        parameters=[{
+            'profile': os.path.join(nav_pkg, 'config', 'alt_profile_example.yaml'),
+            'map_pcd': map_path,          # 垂直走廊检查要读的静态点云
+            'check_radius': 0.25,          # == robot_radius
+            'vz_max': 0.6,                 # 与 quad_pid_nav.yaml 的 twist_max_vz 对齐
+        }],
+    )
+
     return LaunchDescription([
         sim,
         # Give the sim time to publish /odom and /cloud before Nav2 configures
         # its costmaps: they need the TF tree and a robot pose.
         TimerAction(period=8.0, actions=[nav]),
+        merge_cmd_vel_node,
+        alt_profile_node,
     ])

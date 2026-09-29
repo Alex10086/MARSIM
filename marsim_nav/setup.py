@@ -34,6 +34,7 @@ setup(
             'merge_cmd_vel = marsim_nav.merge_cmd_vel:main',
             'gen_layers = marsim_nav.gen_layers:main',
             'alt_profile = marsim_nav.alt_profile:main',
+            'goto3d = marsim_nav.goto3d:main',
         ],
     },
 )

@@ -17,6 +17,19 @@ def next_vz(z_current, z_target, kp=0.8, vz_max=0.6, arrive_tol=0.15):
     return max(-vz_max, min(vz_max, kp * err))
 
 
+def climb_check_xy(cur_x, cur_y, seg_x, seg_y):
+    """垂直走廊该查的水平位置 —— 是**当前位置**，不是段的位置。
+
+    爬升/降落在原地进行（不平移），所以要查无人机此刻所在的那根柱子。
+    `seg_x/seg_y` 故意保留但不使用：它们是「曾经选错的那个位置」，
+    留在签名里是为了让选择显式、可被单测钉住。
+
+    曾经的错误：查 seg['x'], seg['y']。实测起飞点 (0,0) 走廊通畅，
+    而段位置 (5,0) 被 z=5.0 的枝叶挡住 —— 无人机停在通畅处却被永久拒绝。
+    """
+    return (float(cur_x), float(cur_y))
+
+
 def segment_done(z_current, z_target, arrive_tol=0.15):
     """该段是否完成 —— 只看**高度**，不看 vz。
 
@@ -93,13 +106,15 @@ def main(args=None):
             self._cleared = set()
             self._last_check = None
             self._blocked = False
+            self._x = self._y = 0.0
             self._pts = read_pcd(self.get_parameter('map_pcd').value)
             self._pub = self.create_publisher(Float32, '/alt_cmd', 10)
             self.create_subscription(Odometry, '/odom', self._on_odom, 10)
             self.create_timer(0.1, self._on_tick)   # 10 Hz
 
         def _on_odom(self, msg):
-            self._z = msg.pose.pose.position.z
+            p = msg.pose.pose.position
+            self._x, self._y, self._z = p.x, p.y, p.z
 
         def _on_tick(self):
             if self._z is None or self._idx >= len(self._segs):
@@ -112,8 +127,10 @@ def main(args=None):
                     self._idx, self._z, seg['z'], self._cleared,
                     self._last_check, time.time()):
                 self._last_check = time.time()
+                cx, cy = climb_check_xy(self._x, self._y,
+                                        seg['x'], seg['y'])
                 r = check_vertical_corridor(
-                    self._pts, seg['x'], seg['y'], self._z, seg['z'],
+                    self._pts, cx, cy, self._z, seg['z'],
                     self.get_parameter('check_radius').value)
                 if not r['clear']:
                     self._blocked = True

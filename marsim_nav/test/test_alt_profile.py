@@ -115,3 +115,16 @@ def test_segment_advances_on_height_not_on_zero_vz():
     assert segment_done(9.95, 10.0, 0.15) is True    # 到达
     assert segment_done(10.1, 10.0, 0.15) is True    # 到达（含容差）
     assert segment_done(10.5, 10.0, 0.15) is False   # 超出容差
+
+
+def test_corridor_is_checked_at_vehicle_position_not_segment_position():
+    """爬升/降落在原地进行，所以垂直走廊查**当前位置**。
+
+    这条曾经错：查 seg['x'], seg['y']。实测起飞点 (0,0) 走廊通畅，
+    而段位置 (5,0) 被 z=5.0 的枝叶挡住 —— 于是无人机停在通畅处却
+    因为别处的障碍被永久拒绝，任务永远完不成。
+    """
+    from marsim_nav.alt_profile import climb_check_xy
+
+    assert climb_check_xy(0.0, 0.0, 5.0, 0.0) == (0.0, 0.0)
+    assert climb_check_xy(1.5, -2.5, 20.0, -3.0) == (1.5, -2.5)

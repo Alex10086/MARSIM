@@ -30,6 +30,7 @@ setup(
             'nav_diag = marsim_nav.nav_diag:main',
             'nav_live = marsim_nav.live_state:main',
             'nav_occupancy = marsim_nav.occ_probe:main',
+            'vcorridor = marsim_nav.vcorridor:main',
         ],
     },
 )

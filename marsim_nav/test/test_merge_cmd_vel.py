@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from marsim_nav.merge_cmd_vel import merge_twist
+from marsim_nav.merge_cmd_vel import AltCmdState, merge_twist
 
 
 def test_merges_horizontal_from_nav_and_vertical_from_alt():
@@ -29,3 +29,17 @@ def test_non_finite_nav_component_is_zeroed():
 
 def test_negative_age_is_treated_as_fresh():
     assert merge_twist(0.0, 0.0, 0.0, 0.3, alt_age=-1.0)[2] == 0.3
+
+
+def test_alt_state_tracks_last_stamp_and_age():
+    st = AltCmdState()
+    assert st.age(10.0) == math.inf        # 从未收到 -> 视为超时
+    st.update(0.3, stamp=10.0)
+    assert st.age(10.2) == pytest.approx(0.2)
+    assert st.vz == pytest.approx(0.3)
+
+
+def test_alt_state_age_is_elapsed_time_not_a_flag():
+    st = AltCmdState()
+    st.update(0.3, stamp=10.0)
+    assert st.age(11.0) == pytest.approx(1.0)

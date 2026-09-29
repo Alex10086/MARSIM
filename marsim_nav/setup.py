@@ -31,6 +31,7 @@ setup(
             'nav_live = marsim_nav.live_state:main',
             'nav_occupancy = marsim_nav.occ_probe:main',
             'vcorridor = marsim_nav.vcorridor:main',
+            'merge_cmd_vel = marsim_nav.merge_cmd_vel:main',
         ],
     },
 )

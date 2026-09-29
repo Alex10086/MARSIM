@@ -17,6 +17,18 @@ def next_vz(z_current, z_target, kp=0.8, vz_max=0.6, arrive_tol=0.15):
     return max(-vz_max, min(vz_max, kp * err))
 
 
+def commanded_vz(blocked, z_current, z_target, kp=0.8, vz_max=0.6,
+                 arrive_tol=0.15):
+    """安全不变量：受阻时 vz 必须为 0，与高度误差无关。
+
+    这条曾经失守 —— 检查只在「做检查的那个 tick」发 vz=0，其余 tick 照常
+    按高度误差发爬升指令，结果日志写「保持高度」的同时 z 一路涨到 9.9m。
+    """
+    if blocked:
+        return 0.0
+    return next_vz(z_current, z_target, kp, vz_max, arrive_tol)
+
+
 def needs_corridor_check(idx, z, z_target, cleared, last_check,
                          now, retry_interval=2.0):
     """本 tick 是否需要做垂直走廊检查。
@@ -71,6 +83,7 @@ def main(args=None):
             self._z = None
             self._cleared = set()
             self._last_check = None
+            self._blocked = False
             self._pts = read_pcd(self.get_parameter('map_pcd').value)
             self._pub = self.create_publisher(Float32, '/alt_cmd', 10)
             self.create_subscription(Odometry, '/odom', self._on_odom, 10)
@@ -94,19 +107,22 @@ def main(args=None):
                     self._pts, seg['x'], seg['y'], self._z, seg['z'],
                     self.get_parameter('check_radius').value)
                 if not r['clear']:
+                    self._blocked = True
                     self.get_logger().warn(
                         f'垂直走廊受阻 z={self._z:.2f}->{seg["z"]:.2f} '
                         f'blocking={r["blocking_z"]} 保持高度，待横移后再执行')
-                    self._pub.publish(Float32(data=0.0))
-                    return
-                self._cleared.add(self._idx)
-                self.get_logger().info(
-                    f'垂直走廊通畅 z={self._z:.2f}->{seg["z"]:.2f} '
-                    f'nearest={r["nearest"]:.2f}')
-            vz = next_vz(self._z, seg['z'],
-                         self.get_parameter('kp').value,
-                         self.get_parameter('vz_max').value,
-                         self.get_parameter('arrive_tol').value)
+                else:
+                    self._blocked = False
+                    self._cleared.add(self._idx)
+                    self.get_logger().info(
+                        f'垂直走廊通畅 z={self._z:.2f}->{seg["z"]:.2f} '
+                        f'nearest={r["nearest"]:.2f}')
+
+            # 受阻状态跨 tick 生效：只要没重查通过，就一直 vz=0。
+            vz = commanded_vz(self._blocked, self._z, seg['z'],
+                              self.get_parameter('kp').value,
+                              self.get_parameter('vz_max').value,
+                              self.get_parameter('arrive_tol').value)
             self._pub.publish(Float32(data=float(vz)))
             if vz == 0.0:
                 self._idx += 1

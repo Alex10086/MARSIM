@@ -18,12 +18,20 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
+                            TimerAction)
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    use_alt_profile_arg = DeclareLaunchArgument(
+        'use_alt_profile', default_value='false',
+        description='启动固定剖面执行器 alt_profile。'
+                    '默认关：/alt_cmd 只能有一个发布者。')
+
     nav_pkg = get_package_share_directory('marsim_nav')
     quad_pid_pkg = get_package_share_directory('quad_pid')
 
@@ -71,7 +79,10 @@ def generate_launch_description():
     )
 
     # 按剖面发 /alt_cmd；爬升前查垂直走廊。
+    # 默认关闭 —— /alt_cmd 只能有一个发布者，否则会和 goto3d 打架。
+    # 跑固定剖面演示时用 use_alt_profile:=true。
     alt_profile_node = Node(
+        condition=IfCondition(LaunchConfiguration('use_alt_profile')),
         package='marsim_nav',
         executable='alt_profile',
         name='alt_profile_node',
@@ -85,6 +96,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        use_alt_profile_arg,
         sim,
         # Give the sim time to publish /odom and /cloud before Nav2 configures
         # its costmaps: they need the TF tree and a robot pose.

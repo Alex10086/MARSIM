@@ -41,3 +41,31 @@ def test_load_profile_rejects_missing_xyz(tmp_path):
     p.write_text('segments:\n  - {x: 1.0, y: 2.0}\n', encoding='utf8')
     with pytest.raises(ValueError):
         load_profile(str(p))
+
+
+def test_blocked_segment_must_be_rechecked_not_skipped():
+    """受阻的段不得因「已检查过」而被跳过 —— 那会让拒绝变成一次性摆设。"""
+    from marsim_nav.alt_profile import needs_corridor_check
+
+    # 首次：要查
+    assert needs_corridor_check(0, 1.0, 10.0, cleared=set(),
+                                last_check=None, now=0.0) is True
+    # 受阻后（未加入 cleared）：仍要查，但受 retry_interval 节流
+    assert needs_corridor_check(0, 1.0, 10.0, cleared=set(),
+                                last_check=100.0, now=101.0) is False   # 未到 2s
+    assert needs_corridor_check(0, 1.0, 10.0, cleared=set(),
+                                last_check=100.0, now=102.5) is True    # 到点重查
+
+
+def test_cleared_segment_is_never_rechecked():
+    from marsim_nav.alt_profile import needs_corridor_check
+
+    assert needs_corridor_check(0, 1.0, 10.0, cleared={0},
+                                last_check=100.0, now=999.0) is False
+
+
+def test_no_check_when_already_at_target_height():
+    from marsim_nav.alt_profile import needs_corridor_check
+
+    assert needs_corridor_check(0, 10.0, 10.0, cleared=set(),
+                                last_check=None, now=0.0) is False

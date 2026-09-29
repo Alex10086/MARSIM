@@ -100,3 +100,12 @@ def test_waypoints_are_world_coords_with_layer_altitude():
     for x, y, z in r["waypoints"]:
         assert 0.0 <= x <= 1.5 and 0.0 <= y <= 1.5
         assert z in (1.0, 10.0)                # z 必须是某一层的飞行高度
+
+
+def test_huge_beta_never_changes_layer():
+    """性质测试：beta -> 无穷时绝不换层。"""
+    grids = [_free(15, 15), _free(15, 15)]
+    r = plan_slices(grids, [1.0, 10.0], _empty_cloud(),
+                    start_xyz=(0.15, 0.75, 1.0), goal_xyz=(1.35, 0.75, 1.0),
+                    origin=(0.0, 0.0), res=0.1, beta=1e9)
+    assert len({round(z, 3) for _, _, z in r["waypoints"]}) == 1

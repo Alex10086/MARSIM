@@ -458,3 +458,52 @@ z 轮廓（35970 个 Odom 样本）:
 
 > **教训**：这四处全部只能靠「看真实日志里的 z 序列」发现。单元测试全绿的同时，
 > 系统行为一直是错的。**端到端实测不是可选项。**
+
+---
+
+## 12. 发三维点并到达（`goto3d`）
+
+```bash
+# 终端 1：启动全栈（约 45 秒就绪）
+cd ~/pi-cwd-20260922/marsim_ws
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+bash ~/.superpowers/sdd/2026-09-24-marsim-nav2-integration/ros-purge.sh
+ros2 launch marsim_nav sim_navigation.launch.py
+
+# 终端 2：发三维点（x y z，可给多个逐个访问）
+ros2 run marsim_nav goto3d -- 20 -10 6.0
+ros2 run marsim_nav goto3d -- -27.5 -10.5 2.0 -27.5 -12.5 4.0
+```
+
+分工：
+
+| 通道 | 由谁负责 |
+|---|---|
+| `(x, y)` | Nav2 的 `navigate_to_pose` 动作 |
+| `z` | `/alt_cmd`（`merge_cmd_vel` 合流后进 `quad_pid`） |
+| 安全 | `vcorridor` 垂直走廊检查，爬升前查，不通过就保持高度 |
+
+到达判定 `goal_reached_3d` 要求**水平 ≤0.35m 且高度 ≤0.3m 都满足**。
+
+**实测**：发 `(20,-10,6.0)` → 到达 `(19.65,-9.97,5.91)`，z 从 1.00 爬到 5.91，`到达=True`。
+
+### RViz 里
+
+用 **「Nav2 Goal」** 工具点目标是给 Nav2 的 **2D** 目标（不带高度）。
+要飞高度不同的点，用上面的 `goto3d`。
+
+### ⚠️ 已知边界
+
+- **测试路点必须先校验净空**。图案放在 `(20,-10)` 时 8 个角点有 6 个净空仅 0.14~0.22m，
+  会被当成系统 bug。用 `nav_occupancy` 或距离变换先挑开阔处。
+- **多点连续飞行尚未跑通**：长距离目标（约 30m）会在 200s 后报 `Goal failed`
+  （无 `Start occupied` / `no valid path`），与多点切换无关。单个三维点是可靠的。
+- `/alt_cmd` **只能有一个发布者**。`alt_profile` 默认关闭；
+  要跑固定剖面演示用 `use_alt_profile:=true`。
+
+### 固定剖面演示（可选）
+
+```bash
+ros2 launch marsim_nav sim_navigation.launch.py use_alt_profile:=true
+# 按 config/alt_profile_example.yaml 飞：z 1.0 -> 10.0 -> 10.0 -> 1.0
+```

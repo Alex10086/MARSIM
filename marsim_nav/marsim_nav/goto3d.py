@@ -5,8 +5,8 @@
   z       -> /alt_cmd（复用 alt_profile 的 next_vz / commanded_vz / segment_done）
   安全    -> vcorridor 垂直走廊检查（爬升前）
 
-用法：
-    ros2 run marsim_nav goto3d -- <x> <y> <z>
+用法（支持多个点，逐个访问）：
+    ros2 run marsim_nav goto3d -- <x> <y> <z> [<x> <y> <z> ...] [秒]
 """
 import math
 
@@ -45,8 +45,17 @@ def main(args=None):
     if len(argv) < 3:
         print(main.__doc__)
         return 1
-    gx, gy, gz = (float(v) for v in argv[:3])
-    duration = float(argv[3]) if len(argv) > 3 else 240.0
+    # 前 3N 个是路点；若末尾只剩 1 个则当作总时长
+    nums = [float(v) for v in argv]
+    if len(nums) % 3 == 1:
+        duration = nums.pop()
+    else:
+        duration = 600.0
+    if len(nums) % 3 != 0 or not nums:
+        print(main.__doc__)
+        return 1
+    wps = [tuple(nums[i:i + 3]) for i in range(0, len(nums), 3)]
+    gx, gy, gz = wps[0]
 
     class Goto3D(Node):
         def __init__(self):
@@ -66,6 +75,17 @@ def main(args=None):
             self.client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
             self.create_timer(0.1, self._on_tick)
 
+        def send_goal(self, target):
+            gx, gy, _ = target
+            g = NavigateToPose.Goal()
+            g.pose = PoseStamped()
+            g.pose.header.frame_id = 'map'
+            g.pose.pose.position.x = gx
+            g.pose.pose.position.y = gy
+            g.pose.pose.orientation.w = 1.0
+            self.client.send_goal_async(g)
+            self.get_logger().info(f'发 Nav2 目标 ({gx:.2f},{gy:.2f})，z -> {target[2]:.2f}')
+
         def _on_odom(self, m):
             p = m.pose.pose.position
             self._pos = (p.x, p.y, p.z)
@@ -75,32 +95,40 @@ def main(args=None):
                 return
             x, y, z = self._pos
             # 爬升前查垂直走廊（不通过则保持高度，与 alt_profile 同一语义）
+            tgt_z = wps[0][2] if wps else gz
             if self._pts is not None and not self._cleared:
-                if needs_corridor_check(0, z, gz, {0} if self._cleared else set(),
+                if needs_corridor_check(0, z, tgt_z, {0} if self._cleared else set(),
                                         self._last_check, time.time()):
                     self._last_check = time.time()
-                    r = check_vertical_corridor(self._pts, x, y, z, gz,
+                    r = check_vertical_corridor(self._pts, x, y, z, tgt_z,
                                                 self.get_parameter('check_radius').value)
                     if not r['clear']:
                         self._blocked = True
                         self.get_logger().warn(
-                            f'垂直走廊受阻 z={z:.2f}->{gz:.2f} '
+                            f'垂直走廊受阻 z={z:.2f}->{tgt_z:.2f} '
                             f'blocking={r["blocking_z"]} 保持高度')
                     else:
                         self._blocked = False
                         self._cleared = True
                         self.get_logger().info(
-                            f'垂直走廊通畅 z={z:.2f}->{gz:.2f} nearest={r["nearest"]:.2f}')
-            vz = commanded_vz(self._blocked, z, gz,
+                            f'垂直走廊通畅 z={z:.2f}->{tgt_z:.2f} nearest={r["nearest"]:.2f}')
+            tgt_z = wps[0][2] if wps else gz
+            vz = commanded_vz(self._blocked, z, tgt_z,
                               self.get_parameter('kp').value,
                               self.get_parameter('vz_max').value)
             self._pub.publish(Float32(data=float(vz)))
-            if goal_reached_3d(self._pos, (gx, gy, gz)):
+            if wps and goal_reached_3d(self._pos, wps[0]):
+                x2, y2, z2 = wps.pop(0)
                 self.get_logger().info(
-                    f'已到达 ({gx:.2f},{gy:.2f},{gz:.2f})，实际 '
-                    f'({x:.2f},{y:.2f},{z:.2f})')
-                self._pub.publish(Float32(data=0.0))
+                    f'已到达 ({x2:.2f},{y2:.2f},{z2:.2f})，实际 '
+                    f'({x:.2f},{y:.2f},{z:.2f})  剩余 {len(wps)} 个')
+                if wps:
+                    self._cleared = False
+                    self._blocked = False
+                    self._last_check = None
+                    self.send_goal(wps[0])
 
+    wps0 = list(wps)
     rclpy.init(args=args)
     n = Goto3D()
     t0 = time.time()
@@ -109,21 +137,13 @@ def main(args=None):
         while time.time() - t0 < duration:
             rclpy.spin_once(n, timeout_sec=0.2)
             if not sent and n.client.wait_for_server(timeout_sec=1.0):
-                g = NavigateToPose.Goal()
-                g.pose = PoseStamped()
-                g.pose.header.frame_id = 'map'
-                g.pose.pose.position.x = gx
-                g.pose.pose.position.y = gy
-                g.pose.pose.orientation.w = 1.0
-                n.client.send_goal_async(g)
-                sent = True
-                n.get_logger().info(f'已发 Nav2 目标 ({gx:.2f},{gy:.2f})，z -> {gz:.2f}')
-            if n._pos and goal_reached_3d(n._pos, (gx, gy, gz)):
+                n.send_goal(wps[0]); sent = True
+            if n._pos and not wps:
                 break
+        print(f'结果: 全部 {len(wps0)} 个路点，剩余未到 {len(wps)} 个', flush=True)
         if n._pos:
             x, y, z = n._pos
-            print(f'结果: 实际 ({x:.2f},{y:.2f},{z:.2f})  '
-                  f'到达={goal_reached_3d(n._pos, (gx, gy, gz))}', flush=True)
+            print(f'终点: 实际 ({x:.2f},{y:.2f},{z:.2f})', flush=True)
     finally:
         n.destroy_node()
         rclpy.shutdown()

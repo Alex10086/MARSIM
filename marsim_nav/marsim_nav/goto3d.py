@@ -65,6 +65,7 @@ def main(args=None):
             self.declare_parameter('kp', 0.8)
             self.declare_parameter('map_pcd', '')
             self._pos = None
+            self._gh = None
             self._blocked = False
             self._cleared = False
             self._last_check = None
@@ -76,6 +77,14 @@ def main(args=None):
             self.create_timer(0.1, self._on_tick)
 
         def send_goal(self, target):
+            # 必须先取消上一个动作，否则新目标会被抢占/丢失 ——
+            # 实测多点回归里第 3 个点的水平腿就是这么丢的。
+            if getattr(self, '_gh', None) is not None:
+                try:
+                    self._gh.cancel_goal_async()
+                except Exception:
+                    pass
+                self._gh = None
             gx, gy, _ = target
             g = NavigateToPose.Goal()
             g.pose = PoseStamped()
@@ -83,7 +92,14 @@ def main(args=None):
             g.pose.pose.position.x = gx
             g.pose.pose.position.y = gy
             g.pose.pose.orientation.w = 1.0
-            self.client.send_goal_async(g)
+            fut = self.client.send_goal_async(g)
+
+            def _on_accepted(f):
+                try:
+                    self._gh = f.result()
+                except Exception:
+                    self._gh = None
+            fut.add_done_callback(_on_accepted)
             self.get_logger().info(f'发 Nav2 目标 ({gx:.2f},{gy:.2f})，z -> {target[2]:.2f}')
 
         def _on_odom(self, m):
